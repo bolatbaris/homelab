@@ -1,0 +1,11 @@
+version: "3.8"
+
+# Dev-only convenience overrides. Remove/rename this file on prod hosts
+# to keep zero host port mappings.
+services:
+  portainer:
+    ports:
+      - "9000:9000"
+  glances:
+    ports:
+      - "61208:61208"

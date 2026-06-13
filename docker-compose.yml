@@ -11,12 +11,38 @@ services:
     networks:
       - homelab-net
 
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: unless-stopped
+    command: -H unix:///var/run/docker.sock
+    volumes:
+      - ${PODMAN_SOCKET_PATH}:/var/run/docker.sock
+      - ./data/portainer:/data
+    networks:
+      - homelab-net
+
+  glances:
+    image: nicolargo/glances:latest
+    container_name: glances
+    restart: unless-stopped
+    environment:
+      - GLANCES_OPT=-w
+    volumes:
+      - /sys:/sys:ro
+      - /run/udev:/run/udev:ro
+      - ./data/monitor:/glances/conf:ro
+    networks:
+      - homelab-net
+
   backup:
     build: ./backup
     container_name: backup
     restart: unless-stopped
     volumes:
       - ${BACKUP_DEST_PATH}:/backup
+      - ./data/portainer:/sources/portainer:ro
+      - ./data/monitor:/sources/monitor:ro
       # Mount future service data volumes read-only under /sources/<service>
       # e.g. - ./data/gitea:/sources/gitea:ro
 

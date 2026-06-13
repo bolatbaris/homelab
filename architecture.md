@@ -140,4 +140,168 @@ Flag rationale (all required for "drop-in restore, zero permission errors"):
 - update `docker-compose.yml` — add `backup` service (build from `./backup`, source volumes placeholder/commented until real services exist, `${BACKUP_DEST_PATH}:/backup`)
 - update `.env.example` — add `BACKUP_DEST_PATH`
 
-Awaiting approval before implementation.
+Status: ✅ implemented, committed.
+
+---
+
+## Phase 3: Portainer CE (Container Management Dashboard)
+
+### Goal
+Web UI to manage the local Podman environment. Reachable via `https://portainer.localcloud.example` (prod, thru `cloudflared`) and `http://localhost:9000` (dev, for local testing).
+
+### Domain Standardization
+New `.env` variables, used across all future services so subdomains follow one pattern:
+```
+BASE_DOMAIN=localcloud.example
+PORTAINER_SUBDOMAIN=portainer
+```
+- Expected external URL: `https://${PORTAINER_SUBDOMAIN}.${BASE_DOMAIN}` → `https://portainer.localcloud.example`.
+- These vars aren't consumed by `docker-compose.yml` directly (Portainer itself doesn't need to know its public hostname for basic operation) — they exist as the **single source of truth for the Cloudflare Zero Trust setup**, done manually in the Cloudflare dashboard (not part of compose):
+  1. Zero Trust → Networks → Tunnels → (existing tunnel from Phase 1) → Public Hostname → Add a public hostname.
+  2. Subdomain: `${PORTAINER_SUBDOMAIN}` (`portainer`), Domain: `${BASE_DOMAIN}` (`localcloud.example`).
+  3. Service: `HTTP`, URL: `portainer:9000` — container name + internal port, resolved via `homelab-net` since `cloudflared` is on the same network.
+- Every future exposed service repeats this pattern: define `<SERVICE>_SUBDOMAIN` in `.env`, add a Public Hostname rule pointing `<service>:<port>` — `.env` becomes the running inventory of all subdomains in use.
+
+### Image & Service Config
+- `image: portainer/portainer-ce:latest`
+- `restart: unless-stopped`
+- `networks: [homelab-net]`
+- `command: -H unix:///var/run/docker.sock` (Portainer's default; podman's socket is Docker-API compatible so no special flags needed beyond the socket mount itself).
+
+### Ports: Dev Convenience vs Prod Zero-Ports
+Requirement asks for both: local `9000:9000` for Mac testing, but no host port mapping in prod (cloudflared handles routing internally via container name).
+
+**New pattern introduced here**: split into `docker-compose.yml` (shared, prod-safe — no `ports:` on portainer) + `docker-compose.override.yml` (dev-only, adds `9000:9000`). Both `docker-compose` and `podman-compose` auto-load `docker-compose.override.yml` if present, merging it over the base file — no extra flags needed.
+- **Dev (macOS)**: keep `docker-compose.override.yml` in place (can stay tracked in git — it's not secret, just dev convenience). `podman-compose up` → Portainer reachable at `localhost:9000`.
+- **Prod (Debian)**: either don't deploy `docker-compose.override.yml`, or delete/rename it on the server. `podman-compose up` then runs base file only → zero ports, identical to Phase 1/2 principle. Will note this explicitly in a future "prod deploy checklist."
+
+### Socket Mount: Dev (macOS) vs Prod (Debian rootless Podman)
+
+### Socket Mount: Dev (macOS) vs Prod (Debian rootless Podman)
+Portainer needs the container engine socket mounted at `/var/run/docker.sock` inside its container (its built-in auto-detection looks there; podman's socket speaks the same API).
+
+| Env | Host socket path | Notes |
+|---|---|---|
+| **Dev (macOS)** | `/var/folders/g4/sd497xns72n6vnpld82cp7j40000gn/T/podman/podman-machine-default-api.sock` | confirmed via `podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}'` — this path is specific to this Mac's podman machine VM, but the podman machine's API service is already running by default, no extra setup |
+| **Prod (Debian, rootless)** | `/run/user/1000/podman/podman.sock` | requires `systemctl --user enable --now podman.socket` on the server (one-time setup, documented but not automated by compose) |
+
+Resolved via `.env`:
+```
+# Dev (macOS) — output of: podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}'
+PODMAN_SOCKET_PATH=/var/folders/g4/sd497xns72n6vnpld82cp7j40000gn/T/podman/podman-machine-default-api.sock
+# Prod (Debian rootless) — uncomment/set on server's .env instead:
+# PODMAN_SOCKET_PATH=/run/user/1000/podman/podman.sock
+```
+compose: `${PODMAN_SOCKET_PATH}:/var/run/docker.sock` — single line, identical compose file both environments, only `.env` differs (same pattern as `TUNNEL_TOKEN` / `BACKUP_DEST_PATH`).
+
+### Persistent Data Volume
+- Bind mount `./data/portainer:/data` (Portainer's internal DB — users, credentials, endpoint configs).
+- **Deliberately a bind mount, not a named volume** — keeps it a plain host directory under a known path, consistent with the `./data/<service>` convention this project is standardizing on, and directly compatible with the backup sidecar's existing generic loop (see below).
+
+### Backup Integration
+**No changes to `backup.sh` itself required.** Phase 2's script already generically loops over every subdirectory under `/sources/` and rsyncs it to `/backup/<name>/`. The only change needed:
+
+- Add to `backup` service's volumes in `docker-compose.yml`:
+  ```yaml
+  - ./data/portainer:/sources/portainer:ro
+  ```
+- On next 03:00 run, `backup.sh` automatically picks up `/sources/portainer/`, rsyncs with `-aAXH --numeric-ids --delete` to `/backup/portainer/` — same numeric-UID/ACL/xattr preservation guarantees as everything else.
+- Restore: copy `portainer/` backup subdir back into `./data/portainer/`, `podman-compose up -d` — Portainer starts with identical users/credentials/endpoints, no re-setup.
+
+This validates the Phase 2 design choice (generic `/sources/*` loop) — adding new backed-up services from here on is just a one-line volume addition, zero script edits.
+
+### Socket Mount Security Note
+Mounting the container socket gives Portainer full control over all containers on the host (start/stop/inspect/exec into any container). On rootless Podman this is scoped to the user's own containers (no host-root access), which is materially safer than the equivalent on Docker (where the daemon socket is root-owned). Worth flagging now — full secret/access-control hardening for Portainer's own login is a separate future concern, not blocking this phase.
+
+### Docker ↔ Podman Compatibility Notes
+1. **Socket path differs entirely between platforms** (Mac podman-machine VM temp path vs Linux rootless `/run/user/1000/...`) — handled via `.env`, see table above. On Docker Desktop (if ever used instead) it would be `/var/run/docker.sock` directly — same `.env` mechanism would cover that too.
+2. **Socket mount + SELinux (Debian/Podman)**: similar to Phase 2's bind-mount note — may need `:z`/`:Z` suffix on the socket mount on enforcing-SELinux hosts. Flag as something to verify on first prod deploy.
+3. **Podman socket service must be running** — on macOS it's part of the podman machine VM (always on once machine started); on Debian rootless it requires the one-time `systemctl --user enable --now podman.socket`. Will note this in a future "prod setup checklist" doc.
+
+### Files to Change (pending approval)
+- update `docker-compose.yml` — add `portainer` service (homelab-net, socket + `./data/portainer:/data` bind mounts, no ports) and add `./data/portainer:/sources/portainer:ro` to `backup` service volumes
+- new `docker-compose.override.yml` — adds `9000:9000` port mapping to `portainer` for local dev/testing
+- update `.env.example` — add `PODMAN_SOCKET_PATH` (dev value set, prod value commented), `BASE_DOMAIN`, `PORTAINER_SUBDOMAIN`
+
+Status: ✅ implemented, committed.
+
+---
+
+## Phase 4: Hardware & Temperature Monitoring (Glances)
+
+### Goal
+Lightweight web dashboard for CPU/RAM/temperature on the 2013 prod host, reachable at `https://monitor.localcloud.example` via tunnel, `localhost:61208` in dev.
+
+### Tool Choice: Glances (web server mode)
+- **Glances over Netdata** for this hardware: Netdata's default config runs ~15-30+ collector plugins, a long-retention metrics DB, and a Go/C daemon that idles noticeably higher in RAM (~100MB+) — heavy for a 2013 laptop meant to also run cloudflared/Portainer/backup. Netdata *can* be stripped down, but that's extra config surface for marginal gain.
+- **Glances** is a single Python process (`psutil`-based), built-in web server mode (`-w` flag), no database, no retention — just live stats served as a webpage/API. RAM footprint typically ~30-50MB, near-zero idle CPU. Exactly the "ultra-lightweight" fit.
+- Image: `nicolargo/glances:latest` (official, maintained, includes `-full` variant if extra export plugins ever needed — not required here).
+- Enabled via `GLANCES_OPT=-w` env var (image entrypoint passes this to the glances command → starts built-in web UI on port `61208`).
+
+### Temperature Sensor Access (rootless Podman, Debian)
+Temperature/fan/voltage data on Linux comes from `/sys/class/hwmon/*` (and sometimes `/sys/class/thermal/*`), populated by kernel sensor drivers (`coretemp`, etc.) and named via `lm-sensors`/`udev`.
+
+Required mounts (read-only — monitoring never needs to write):
+```yaml
+volumes:
+  - /sys:/sys:ro
+  - /run/udev:/run/udev:ro
+```
+- `/sys:/sys:ro` — gives `psutil.sensors_temperatures()` access to `/sys/class/hwmon/hwmon*/temp*_input`, the actual readings.
+- `/run/udev:/run/udev:ro` — lets `psutil`/`lm-sensors` resolve hwmon device names to human-readable labels (e.g. "Core 0" vs raw `hwmon2`) — without it, temps still read but labels are generic.
+- **No `privileged: true`, no extra `cap_add` needed** — these are read-only sysfs paths, world-readable by default on most kernels for `coretemp`/`acpi` thermal zones.
+
+**Host-side prerequisite (Debian prod, one-time, outside compose)**: kernel sensor modules must be loaded — `sensors-detect` (from `lm-sensors` package) + `modprobe coretemp` (or relevant chip driver). If modules aren't loaded, `/sys/class/hwmon` is empty/sparse regardless of container mounts. Will document as a step in the future "prod setup checklist," not a compose concern.
+
+**Known caveat to verify on real prod hardware**: a few hwmon drivers restrict `temp*_input` to root-readable only. Rootless Podman containers run as root *inside* the user namespace but that root is mapped to an unprivileged host UID — if a specific sensor file is `0600 root:root` on the host, the container may see it but still get a permission error reading it. If this happens on the 2013 Debian box, the fallback is a `udev` rule to relax perms on that specific hwmon node (chip-specific, decided when we see real hardware) — flagging now, not blocking this spec.
+
+### Domain Routing
+New `.env` variable, same pattern as Phase 3:
+```
+MONITOR_SUBDOMAIN=monitor
+```
+- Expected external URL: `https://${MONITOR_SUBDOMAIN}.${BASE_DOMAIN}` → `https://monitor.localcloud.example`.
+- Cloudflare Zero Trust → same tunnel → add Public Hostname: Subdomain `monitor`, Domain `localcloud.example`, Service `HTTP`, URL `glances:61208` (container name + Glances' web port, resolved via `homelab-net`).
+
+### Service Config
+- `image: nicolargo/glances:latest`
+- `container_name: glances`
+- `restart: unless-stopped`
+- `environment: GLANCES_OPT=-w`
+- `networks: [homelab-net]`
+- no `ports:` in base file (zero-ports principle)
+- `pid: host` — **not** requested by this spec; omitted to keep container fully namespace-isolated. Process-level stats will show container's own view rather than host processes; CPU/RAM/temp totals (the actual ask) are unaffected since those come from `/proc` and `/sys` which reflect host-wide stats regardless. Flagging as a deliberate scope limit — can revisit if per-process host visibility is wanted later.
+
+### Config File & Backup Integration
+- `./data/monitor/glances.conf` — optional custom config (e.g. temperature warning/critical thresholds). Bind mount:
+  ```yaml
+  - ./data/monitor:/glances/conf:ro
+  ```
+  and extend `GLANCES_OPT=-w -C /glances/conf/glances.conf` once the file exists (image looks for config at that path when `-C` passed).
+- **Backup**: add to `backup` service volumes in `docker-compose.yml`:
+  ```yaml
+  - ./data/monitor:/sources/monitor:ro
+  ```
+  Same generic `/sources/*` loop from Phase 2 picks it up automatically — zero `backup.sh` changes, identical to Phase 3's pattern.
+
+### Dev/Prod Port Mapping
+- Base `docker-compose.yml`: no ports on `glances`.
+- `docker-compose.override.yml`: add
+  ```yaml
+  glances:
+    ports:
+      - "61208:61208"
+  ```
+  → `http://localhost:61208` for Mac testing.
+
+### Docker ↔ Podman Compatibility Notes
+1. `/sys:/sys:ro` and `/run/udev:/run/udev:ro` mount identically on both platforms syntactically; actual sensor *availability* differs — macOS (Docker/Podman VM) has no real `coretemp` hwmon data (VM's `/sys` won't expose host Mac thermals), so **temperature panel will likely show empty/N/A in dev** — expected, not a bug. CPU/RAM stats work fine in dev for functional testing.
+2. SELinux (Debian/Podman): as with prior phases, `/sys` and `/run/udev` read-only mounts may need `:ro,z` if enforcing — verify on first prod deploy.
+3. `./data/monitor:/glances/conf:ro` and backup mount — same bind-mount conventions as Phase 3, no platform divergence.
+
+### Files to Change (pending approval)
+- update `docker-compose.yml` — add `glances` service (homelab-net, `/sys` + `/run/udev` ro mounts, `./data/monitor:/glances/conf:ro`, no ports) and add `./data/monitor:/sources/monitor:ro` to `backup` service volumes
+- update `docker-compose.override.yml` — add `61208:61208` port mapping for `glances`
+- update `.env.example` — add `MONITOR_SUBDOMAIN`
+
+Status: ✅ implemented, committed.
