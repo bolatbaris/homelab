@@ -35,6 +35,21 @@ services:
     networks:
       - homelab-net
 
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    restart: unless-stopped
+    environment:
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__server__SSH_PORT=2222
+      - GITEA__server__SSH_DOMAIN=${BASE_DOMAIN}
+    volumes:
+      - ./data/gitea:/data
+    ports:
+      - "2222:22"
+    networks:
+      - homelab-net
+
   backup:
     build: ./backup
     container_name: backup
@@ -43,8 +58,9 @@ services:
       - ${BACKUP_DEST_PATH}:/backup
       - ./data/portainer:/sources/portainer:ro
       - ./data/monitor:/sources/monitor:ro
+      - ./data/gitea:/sources/gitea:ro
       # Mount future service data volumes read-only under /sources/<service>
-      # e.g. - ./data/gitea:/sources/gitea:ro
+      # e.g. - ./data/<service>:/sources/<service>:ro
 
 networks:
   homelab-net:

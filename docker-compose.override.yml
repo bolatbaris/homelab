@@ -9,3 +9,6 @@ services:
   glances:
     ports:
       - "61208:61208"
+  gitea:
+    ports:
+      - "3000:3000"

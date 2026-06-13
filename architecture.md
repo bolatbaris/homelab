@@ -305,3 +305,57 @@ MONITOR_SUBDOMAIN=monitor
 - update `.env.example` — add `MONITOR_SUBDOMAIN`
 
 Status: ✅ implemented, committed.
+
+---
+
+## Phase 5: Gitea (Self-Hosted Git Server)
+
+### Goal
+Self-hosted git over HTTPS (via tunnel, `https://git.localcloud.example`) and SSH (direct, port-forwarded), backed by SQLite — no extra DB container.
+
+### SQLite Choice & RAM Impact
+- `GITEA__database__DB_TYPE=sqlite3` (single env var) — Gitea ships SQLite support built-in, DB is just a file (`/data/gitea/gitea.db`).
+- Avoids a second container entirely: Postgres/MySQL each idle at roughly 50-150MB RAM plus their own restart/healthcheck/backup concerns. On a 2013 box already running cloudflared + Portainer + Glances + backup, that's meaningful headroom saved.
+- SQLite's concurrency limits (single-writer) are a non-issue for a single-user/small-team homelab git server — this is the documented, supported Gitea config for exactly this use case.
+
+### Domain Routing (HTTP)
+New `.env` variable, same pattern as Phases 3/4:
+```
+GITEA_SUBDOMAIN=git
+```
+- Expected external URL: `https://${GITEA_SUBDOMAIN}.${BASE_DOMAIN}` → `https://git.localcloud.example`.
+- Cloudflare Zero Trust → same tunnel → Public Hostname: Subdomain `git`, Domain `localcloud.example`, Service `HTTP`, URL `gitea:3000`.
+- `ROOT_URL` left **unset/auto-detected** — Gitea derives it from request headers (`X-Forwarded-*`, which `cloudflared` sets), so the same container works correctly whether accessed via `https://git.localcloud.example` (prod) or `http://localhost:3000` (dev) without an env-specific override.
+
+### SSH Access — the Zero-Ports Exception
+HTTP(S) git operations route fine through the Cloudflare tunnel (it's just web traffic). **Raw `git@host:repo` SSH does not** — Cloudflare's standard tunnel is HTTP/TCP-app-aware via Zero Trust Access, but consuming SSH that way requires every client to install `cloudflared access ssh` config locally, which adds friction for a feature (`git push` over SSH) meant to be transparent.
+
+**Decision for this phase**: accept one deviation from zero-open-ports — forward `2222:22` directly in the **base** `docker-compose.yml` (not the override), since this is needed in prod too, not just dev.
+- `GITEA__server__SSH_PORT=2222` — tells Gitea to advertise port `2222` in clone URLs/instructions (container's internal sshd still listens on 22; this is just the externally-visible number).
+- `GITEA__server__SSH_DOMAIN=${BASE_DOMAIN}` — clone URLs show `git@localcloud.example:2222/...`. Requires, on prod: a DNS A record for `localcloud.example` (or reuse existing) pointing at the home public IP, plus router port-forward `2222 → 2222` on the Debian host.
+- Flagging as a tracked exception, not silently introduced — `.env`/architecture doc both note it. HTTPS-based pushes remain available as the zero-port alternative if port-forwarding is ever undesirable.
+
+### Volume & Backup Integration
+- `./data/gitea:/data` — single bind mount covers everything: repos, SQLite DB (`gitea.db`), `app.ini` config, avatars, LFS objects, etc.
+- Official `gitea/gitea` image runs as uid `1000` (`git` user) by default — aligns with Phase 2's `--numeric-ids` rsync design; restore-to-new-host preserves ownership without manual `chown`.
+- Backup: append to `backup` service volumes in `docker-compose.yml`:
+  ```yaml
+  - ./data/gitea:/sources/gitea:ro
+  ```
+  Picked up automatically by the existing generic `/sources/*` loop — zero `backup.sh` changes, same as Phases 3/4.
+
+### Ports Summary
+- Base `docker-compose.yml`: **no** `3000` mapping (HTTP goes through tunnel); **yes** `2222:22` (SSH exception, documented above).
+- `docker-compose.override.yml`: add `3000:3000` for local HTTP testing on macOS (`http://localhost:3000`).
+
+### Docker ↔ Podman Compatibility Notes
+1. Bind mount `./data/gitea:/data` — same bind-mount conventions as Phases 3/4; SELinux `:Z` flag to verify on first prod deploy (consistent open item across all bind mounts so far).
+2. `2222:22` port mapping — rootless Podman can bind host ports ≥1024 without extra config (this is why `2222` was chosen over `22`); binding `22` directly would need `net.ipv4.ip_unprivileged_port_start` tuning on the Debian host. `2222` avoids that entirely.
+3. uid `1000` inside container — under rootless Podman this maps to the *running user's* uid via user-namespace remapping (not literally host uid 1000). `--numeric-ids` rsync still works because it's preserving container-side numeric IDs, which is what matters for the container's own permission checks on restore — consistent regardless of which host uid the container's namespace maps to.
+
+### Files to Change (pending approval)
+- update `docker-compose.yml` — add `gitea` service (`image: gitea/gitea:latest`, `GITEA__database__DB_TYPE=sqlite3`, `GITEA__server__SSH_PORT=2222`, `GITEA__server__SSH_DOMAIN=${BASE_DOMAIN}`, `./data/gitea:/data`, `2222:22` port, homelab-net) and append `./data/gitea:/sources/gitea:ro` to `backup` service volumes
+- update `docker-compose.override.yml` — add `3000:3000` for `gitea`
+- update `.env.example` — add `GITEA_SUBDOMAIN`
+
+Awaiting approval before implementation.
