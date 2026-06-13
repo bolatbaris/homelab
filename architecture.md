@@ -358,4 +358,54 @@ HTTP(S) git operations route fine through the Cloudflare tunnel (it's just web t
 - update `docker-compose.override.yml` — add `3000:3000` for `gitea`
 - update `.env.example` — add `GITEA_SUBDOMAIN`
 
-Awaiting approval before implementation.
+Status: ✅ implemented, committed.
+
+---
+
+## Phase 6: n8n (Workflow Automation / Agentic Orchestration)
+
+### Goal
+Automation engine for webhooks, git-event hooks, AI-agent orchestration — reachable at `https://n8n.localcloud.example` (prod, via tunnel) and `localhost:5678` (dev).
+
+### Resource Footprint & SQLite
+- `n8nio/n8n:latest` — default DB is SQLite (file under `~/.n8n/database.sqlite`), no `DB_TYPE` env needed; only set it if we ever *wanted* Postgres, which we don't.
+- Single Node.js process, idles roughly in the 150-250MB range — comparable to Gitea, no second DB container. Same rationale as Phase 5: every avoided sidecar container matters on 2013 hardware running 5 services already.
+- SQLite is fine for n8n's typical homelab load (occasional webhook triggers, scheduled workflows) — single-writer limits aren't a practical constraint here.
+
+### `WEBHOOK_URL` — Why It's Required
+Unlike Gitea (which auto-detects its URL from proxy headers), n8n **bakes the webhook base URL into every workflow's webhook-node URL at creation/display time** — if unset or wrong, copy-pasted webhook URLs (e.g. for GitHub/Gitea webhook configs) would show `http://localhost:5678/webhook/...`, useless to external callers.
+
+New `.env` variable, same pattern as Phases 3-5:
+```
+N8N_SUBDOMAIN=n8n
+```
+- `WEBHOOK_URL=https://${N8N_SUBDOMAIN}.${BASE_DOMAIN}` passed as container env → resolves to `https://n8n.localcloud.example`.
+- **Deliberate choice: same value in dev and prod** — unlike the gitea `ROOT_URL` (left auto-detect), n8n needs *one* consistent value so webhook URLs displayed in the UI are always the real, externally-callable ones (via the tunnel), even when the n8n instance generating them happens to be running on the dev Mac. Editing a workflow locally and copying its webhook URL into e.g. a Gitea webhook config "just works" without a manual find/replace. No per-env override needed in `docker-compose.override.yml` for this var.
+- Cloudflare Zero Trust → same tunnel → Public Hostname: Subdomain `n8n`, Domain `localcloud.example`, Service `HTTP`, URL `n8n:5678`.
+
+### Volume, Permissions & Backup Integration
+- `./data/n8n:/home/node/.n8n` — persists workflows, credentials (encrypted), execution history, and the SQLite DB.
+- `n8nio/n8n` image runs as **non-root `node` user (uid 1000)** from the start (no root-then-drop-privileges step like some images) — it cannot `chown` a freshly-created bind mount itself. **First-run gotcha**: if `./data/n8n` doesn't exist yet, the container engine auto-creates it (commonly root-owned), and n8n's uid-1000 process gets `EACCES` on startup.
+  - **Mitigation**: create `./data/n8n` on the host *before* first `up` (`mkdir -p ./data/n8n`) — both platforms create plain directories identically, sidesteps the auto-create-as-root issue entirely. Will note as a one-line step in the implementation/deploy notes.
+- Once correctly owned by uid 1000 (or its rootless-Podman-mapped equivalent), this aligns directly with Phase 2's `--numeric-ids` rsync — same guarantee as Gitea: restore-to-new-host preserves ownership, n8n starts with identical workflows/credentials, no `chown` needed.
+- Backup: append to `backup` service volumes in `docker-compose.yml`:
+  ```yaml
+  - ./data/n8n:/sources/n8n:ro
+  ```
+  Picked up automatically by the existing generic `/sources/*` loop — zero `backup.sh` changes, same as Phases 3-5.
+
+### Ports Summary
+- Base `docker-compose.yml`: no ports (internal `n8n:5678` via `homelab-net`, tunnel handles external).
+- `docker-compose.override.yml`: add `5678:5678` for local dev (`http://localhost:5678`).
+
+### Docker ↔ Podman Compatibility Notes
+1. Bind mount `./data/n8n:/home/node/.n8n` — same conventions/SELinux `:Z` open item as prior phases.
+2. Pre-creating `./data/n8n` directory (permissions mitigation above) is identical on macOS and Debian — plain `mkdir -p`, no platform divergence.
+3. Encrypted credentials in n8n's SQLite DB are encrypted with a key n8n auto-generates and stores in `./data/n8n/config` on first run — since the whole `./data/n8n` dir is backed up together, the key and the encrypted data travel together, so restore decrypts correctly. (If we ever pin `N8N_ENCRYPTION_KEY` via `.env` instead of letting it auto-generate, that'd be a future hardening step — not needed now since it's bundled in the same backup.)
+
+### Files to Change (pending approval)
+- update `docker-compose.yml` — add `n8n` service (`image: n8nio/n8n:latest`, `WEBHOOK_URL=https://${N8N_SUBDOMAIN}.${BASE_DOMAIN}`, `./data/n8n:/home/node/.n8n`, no ports, homelab-net) and append `./data/n8n:/sources/n8n:ro` to `backup` service volumes
+- update `docker-compose.override.yml` — add `5678:5678` for `n8n`
+- update `.env.example` — add `N8N_SUBDOMAIN`
+
+Status: ✅ implemented, committed.

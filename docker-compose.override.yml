@@ -12,3 +12,6 @@ services:
   gitea:
     ports:
       - "3000:3000"
+  n8n:
+    ports:
+      - "5678:5678"

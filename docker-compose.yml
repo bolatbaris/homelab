@@ -50,6 +50,17 @@ services:
     networks:
       - homelab-net
 
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    environment:
+      - WEBHOOK_URL=https://${N8N_SUBDOMAIN}.${BASE_DOMAIN}
+    volumes:
+      - ./data/n8n:/home/node/.n8n
+    networks:
+      - homelab-net
+
   backup:
     build: ./backup
     container_name: backup
@@ -59,6 +70,7 @@ services:
       - ./data/portainer:/sources/portainer:ro
       - ./data/monitor:/sources/monitor:ro
       - ./data/gitea:/sources/gitea:ro
+      - ./data/n8n:/sources/n8n:ro
       # Mount future service data volumes read-only under /sources/<service>
       # e.g. - ./data/<service>:/sources/<service>:ro
 
