@@ -11,6 +11,15 @@ services:
     networks:
       - homelab-net
 
+  backup:
+    build: ./backup
+    container_name: backup
+    restart: unless-stopped
+    volumes:
+      - ${BACKUP_DEST_PATH}:/backup
+      # Mount future service data volumes read-only under /sources/<service>
+      # e.g. - ./data/gitea:/sources/gitea:ro
+
 networks:
   homelab-net:
     driver: bridge
