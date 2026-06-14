@@ -1,6 +1,6 @@
 # Homelab
 
-Self-hosted services on a 2013 laptop (Debian + Podman, prod) / macOS (dev), exposed only via Cloudflare Tunnel — zero inbound ports except Gitea SSH.
+A low-resource, rootless-Podman homelab stack for older hardware (2013 laptop, Debian prod / macOS dev) — DNS-level ad-blocking, agentic workflow orchestration (n8n), self-hosted git, container management, hardware monitoring, and self-healing nightly backups. Exposed to the internet only via Cloudflare Tunnel — zero inbound ports except Gitea SSH and LAN-only AdGuard DNS.
 
 Full design rationale, decisions, and platform-compatibility notes for each phase: [architecture.md](architecture.md).
 Production deploy checklist: [deployment.md](deployment.md).
@@ -19,15 +19,23 @@ Production deploy checklist: [deployment.md](deployment.md).
 
 All services share the `homelab-net` bridge network. Dev ports come from `docker-compose.override.yml` (auto-merged); production deletes/renames that file to stay zero-ports (see [deployment.md](deployment.md)).
 
-## Dev Quickstart (macOS)
+## Quick Start
 
+### Production (Debian, rootless Podman) — Clean Slate
+```sh
+git clone <repo-url> ~/homelab && cd ~/homelab
+cp .env.example .env && nano .env   # fill in TUNNEL_TOKEN at minimum
+chmod +x run.sh && ./run.sh
+```
+`run.sh` is the single host-preparation + launch step: creates `./data/*` dirs, fixes Debian's port-53 conflict (AdGuard vs `systemd-resolved`), persists the rootless-Podman sysctl for binding port 53, enables boot-persistence (`loginctl linger` + `podman-restart.service`), and brings up the full stack. See [deployment.md](deployment.md) for the full annotated checklist (static IP, sensors, USB backup mount — the parts `run.sh` intentionally doesn't touch).
+
+### Dev (macOS)
 ```sh
 cp .env.example .env
 # edit .env: set TUNNEL_TOKEN at minimum
 
 podman-compose up -d
 ```
-
 - Portainer: http://localhost:9000
 - Glances: http://localhost:61208
 - Gitea: http://localhost:3000
@@ -36,7 +44,7 @@ podman-compose up -d
 
 Note: temperature sensors will show empty/N/A in the macOS podman VM — expected, see [architecture.md](architecture.md) Phase 4.
 
-Note: AdGuard DNS (port 53) may require a sysctl tweak inside the podman machine VM on macOS — see architecture.md Phase 7 if port 53 binding fails on first dev up.
+Note: AdGuard DNS (port 53) may require a sysctl tweak inside the podman machine VM on macOS — see architecture.md Phase 7 if port 53 binding fails on first dev up. (`run.sh` is Debian-only; don't run it on macOS — it edits `/etc/resolv.conf` and `systemd-resolved` config that don't apply there.)
 
 ## Environment Variables (`.env`)
 
