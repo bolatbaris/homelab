@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: docker.io/cloudflare/cloudflared:latest
     container_name: cloudflared
     restart: unless-stopped
     command: tunnel --no-autoupdate run --token $TUNNEL_TOKEN
@@ -12,7 +12,7 @@ services:
       - homelab-net
 
   portainer:
-    image: portainer/portainer-ce:latest
+    image: docker.io/portainer/portainer-ce:latest
     container_name: portainer
     restart: unless-stopped
     command: -H unix:///var/run/docker.sock
@@ -23,7 +23,7 @@ services:
       - homelab-net
 
   glances:
-    image: nicolargo/glances:latest
+    image: docker.io/nicolargo/glances:latest
     container_name: glances
     restart: unless-stopped
     environment:
@@ -36,7 +36,7 @@ services:
       - homelab-net
 
   gitea:
-    image: gitea/gitea:latest
+    image: docker.io/gitea/gitea:latest
     container_name: gitea
     restart: unless-stopped
     environment:
@@ -51,7 +51,7 @@ services:
       - homelab-net
 
   n8n:
-    image: n8nio/n8n:latest
+    image: docker.io/n8nio/n8n:latest
     container_name: n8n
     restart: unless-stopped
     environment:
@@ -62,7 +62,7 @@ services:
       - homelab-net
 
   adguard:
-    image: adguard/adguardhome:latest
+    image: docker.io/adguard/adguardhome:latest
     container_name: adguard
     restart: unless-stopped
     ports:
