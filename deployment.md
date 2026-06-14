@@ -98,7 +98,7 @@ If not mounted yet, mount/fstab-entry the USB drive before first `up` — `backu
 chmod +x run.sh
 ./run.sh
 ```
-This single step consolidates everything that used to be manual: pre-creates `./data/*` directories (avoids uid-1000 `EACCES`), clears port 53 for AdGuard (disables `systemd-resolved`'s stub listener, repoints `/etc/resolv.conf`), persists the rootless-Podman unprivileged-port sysctl, enables `loginctl linger` + `podman.socket` + `podman-restart.service` for autonomous boot, and finally runs `podman-compose up -d`.
+This single step consolidates everything that used to be manual: pre-creates `./data/*` directories (avoids uid-1000 `EACCES`), fixes `./data/n8n` ownership to uid 1000 via `podman unshare chown` (prevents an n8n crash loop under rootless Podman's uid mapping), clears port 53 for AdGuard (disables `systemd-resolved`'s stub listener, repoints `/etc/resolv.conf`), persists the rootless-Podman unprivileged-port sysctl, enables `loginctl linger` + `podman.socket` + `podman-restart.service` for autonomous boot, and finally runs `podman-compose up -d`.
 
 ---
 
