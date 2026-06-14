@@ -61,6 +61,20 @@ services:
     networks:
       - homelab-net
 
+  adguard:
+    image: adguard/adguardhome:latest
+    container_name: adguard
+    restart: unless-stopped
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "3001:3000"
+    volumes:
+      - ./data/adguard/conf:/opt/adguardhome/conf
+      - ./data/adguard/work:/opt/adguardhome/work
+    networks:
+      - homelab-net
+
   backup:
     build: ./backup
     container_name: backup
@@ -71,6 +85,7 @@ services:
       - ./data/monitor:/sources/monitor:ro
       - ./data/gitea:/sources/gitea:ro
       - ./data/n8n:/sources/n8n:ro
+      - ./data/adguard:/sources/adguard:ro
       # Mount future service data volumes read-only under /sources/<service>
       # e.g. - ./data/<service>:/sources/<service>:ro
 

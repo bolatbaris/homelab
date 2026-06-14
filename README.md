@@ -10,6 +10,7 @@ Production deploy checklist: [deployment.md](deployment.md).
 | Service | Image | Subdomain (`.env`) | External URL | Dev port | Data dir |
 |---|---|---|---|---|---|
 | cloudflared | `cloudflare/cloudflared` | — | (tunnel gateway) | — | — |
+| adguard | `adguard/adguardhome` | — (LAN-only, no tunnel) | `http://192.168.1.10:3001` (prod LAN) | `3001` | `./data/adguard` |
 | portainer | `portainer/portainer-ce` | `PORTAINER_SUBDOMAIN` | `https://portainer.localcloud.example` | `9000` | `./data/portainer` |
 | glances | `nicolargo/glances` | `MONITOR_SUBDOMAIN` | `https://monitor.localcloud.example` | `61208` | `./data/monitor` |
 | gitea | `gitea/gitea` | `GITEA_SUBDOMAIN` | `https://git.localcloud.example` (HTTP) / `git@localcloud.example:2222` (SSH) | `3000` | `./data/gitea` |
@@ -31,8 +32,11 @@ podman-compose up -d
 - Glances: http://localhost:61208
 - Gitea: http://localhost:3000
 - n8n: http://localhost:5678
+- AdGuard: http://localhost:3001
 
 Note: temperature sensors will show empty/N/A in the macOS podman VM — expected, see [architecture.md](architecture.md) Phase 4.
+
+Note: AdGuard DNS (port 53) may require a sysctl tweak inside the podman machine VM on macOS — see architecture.md Phase 7 if port 53 binding fails on first dev up.
 
 ## Environment Variables (`.env`)
 

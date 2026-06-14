@@ -409,3 +409,128 @@ N8N_SUBDOMAIN=n8n
 - update `.env.example` — add `N8N_SUBDOMAIN`
 
 Status: ✅ implemented, committed.
+
+---
+
+## Phase 7: AdGuard Home (Network-Wide DNS Ad-Blocking)
+
+### Goal
+Network-wide DNS ad/tracker blocking for every LAN device, served from the prod host at a fixed address (`192.168.1.10`). **LAN-only** — no Cloudflare tunnel exposure, no subdomain. Web UI reachable at `http://192.168.1.10:3001` (prod) / `http://localhost:3001` (dev).
+
+### Host-Side Prerequisites (Debian Prod)
+These three items are **host OS configuration, not compose** — same category as Phase 4's `lm-sensors` step. All go into `deployment.md`, not `docker-compose.yml`.
+
+#### 1. Static IP via netplan
+DHCP reservations are modem-dependent and can drift; a netplan static config is independent of the router and guarantees AdGuard (and every client pointed at it) always finds the host at `192.168.1.10`.
+
+`/etc/netplan/01-netcfg.yaml`:
+```yaml
+network:
+  version: 2
+  ethernets:
+    <iface>:
+      dhcp4: no
+      addresses:
+        - 192.168.1.10/24
+      routes:
+        - to: default
+          via: <gateway-ip>
+      nameservers:
+        addresses: [1.1.1.1, 8.8.8.8]
+```
+Apply: `sudo netplan apply`. Also configure the modem's DHCP server to **reserve/exclude `192.168.1.10`** from its lease pool, so no other client can be handed this address — belt-and-suspenders alongside the static config.
+
+#### 2. Unprivileged port 53 (rootless Podman)
+Port `53` (DNS, TCP+UDP) is `<1024` — rootless Podman refuses to bind it by default.
+
+`/etc/sysctl.d/99-unprivileged-port.conf`:
+```
+net.ipv4.ip_unprivileged_port_start=53
+```
+Apply: `sudo sysctl --system` (or reboot). One-time, persists across reboots via the sysctl.d file.
+
+#### 3. Disable `systemd-resolved`'s stub listener
+Ubuntu's `systemd-resolved` binds `127.0.0.53:53` by default (stub resolver) — this doesn't conflict with AdGuard binding `0.0.0.0:53`/`192.168.1.10:53` directly, but **does** prevent the host itself from later using AdGuard as its own resolver, and can cause confusing double-resolution behavior. Disable it:
+
+`/etc/systemd/resolved.conf`:
+```ini
+[Resolve]
+DNSStubListener=no
+```
+Then:
+```sh
+sudo systemctl restart systemd-resolved
+# point host's own DNS at AdGuard once it's running:
+sudo rm /etc/resolv.conf
+echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
+```
+
+### Image & Service Config
+- `image: adguard/adguardhome:latest`
+- `container_name: adguard`
+- `restart: unless-stopped`
+- `networks: [homelab-net]`
+- Port 53 (DNS) **must be in base `docker-compose.yml`**, not just override — DNS has to work in prod:
+  ```yaml
+  ports:
+    - "53:53/tcp"
+    - "53:53/udp"
+    - "3001:3000"
+  ```
+- Two bind mounts:
+  ```yaml
+  - ./data/adguard/conf:/opt/adguardhome/conf
+  - ./data/adguard/work:/opt/adguardhome/work
+  ```
+
+### Web UI: LAN-Only, Never Internet
+**No `ADGUARD_SUBDOMAIN` in `.env`, no Cloudflare Public Hostname rule for this service — deliberate, not an oversight.** AdGuard's web UI is the control panel for the network's DNS/ad-blocking — exposing it to the internet would let anyone who finds the subdomain attempt to log in and repoint every device's DNS resolution. Since its entire purpose is *local* network service, LAN-only access is both sufficient and strictly safer; the tunnel pattern used for Portainer/Gitea/n8n/Glances is intentionally **not** repeated here.
+
+### Port Mapping: Why `3001:3000`
+AdGuard's container listens on `3000` internally for its web UI. In dev, `docker-compose.override.yml` already maps host `3000` → Gitea. Rather than fight that conflict, AdGuard's host mapping is `3001:3000` — and crucially this is placed in the **base** `docker-compose.yml` (not override), because:
+- Prod needs it permanently (LAN users hit `http://192.168.1.10:3001`).
+- Dev gets it "for free" at `http://localhost:3001` without any override changes.
+- **`docker-compose.override.yml` needs zero changes for AdGuard** — every port it needs (`53/tcp`, `53/udp`, `3001:3000`) is already in the base file and applies identically in both environments (unlike Portainer/Glances/Gitea/n8n, whose base files are port-less and rely on override for dev access).
+
+### `.env`: No Changes Needed
+No new variables required — no subdomain (LAN-only, per above), no tunnel routing, no per-env path differences for this service. Stated explicitly so it's clear this isn't a missed step.
+
+### First-Run Flow
+On first `podman-compose up`, `./data/adguard/{conf,work}` are empty — AdGuard serves a setup wizard on port `3000` (host `3001`). Visiting `http://192.168.1.10:3001` (prod) or `http://localhost:3001` (dev) walks through: admin credentials, listening interfaces (bind to all / `192.168.1.10`), upstream DNS resolvers. On completion, AdGuard writes `AdGuardHome.yaml` into `conf/` — from that point on, the container starts directly into the running service using that config.
+
+### Backup Integration
+Both directories under `./data/adguard/` need backing up:
+- `conf/AdGuardHome.yaml` — DNS config, upstream resolvers, filter list subscriptions, **admin credential hash**.
+- `work/` — query logs, stats DB, downloaded filter-list cache.
+
+Single mount covers both (they share the `./data/adguard/` parent):
+```yaml
+- ./data/adguard:/sources/adguard:ro
+```
+Picked up automatically by the existing generic `/sources/*` loop — **zero `backup.sh` changes**, identical pattern to Phases 3-6.
+
+**Restore guarantee**: copy `./data/adguard/` back, `podman-compose up -d` → AdGuard resumes with identical DNS rules, block lists (no re-download needed — cached in `work/`), query history/stats, and admin login (`AdGuardHome.yaml` password hash restored as-is).
+
+**Tuning note (not a blocker)**: `work/`'s query-log DB grows continuously. AdGuard's UI has a log-retention setting (Settings → General → query log retention) — set a sane window (e.g. 7-30 days) to bound backup size over time. Not required for initial setup, worth doing once the UI is up.
+
+### Docker ↔ Podman Compatibility Notes
+1. **Port 53 binding (sysctl change) is Linux-only.** On macOS, podman runs inside a Linux VM (podman machine) — the same `net.ipv4.ip_unprivileged_port_start` mechanism applies *inside that VM*, but it's untested here; flagging as something to verify on first dev `up` (binding `53:53` may just work inside the VM, or may need the same sysctl tweak run via `podman machine ssh`).
+2. **`systemd-resolved` / `/etc/resolv.conf`**: macOS has neither — no dev-side action needed, these steps are prod-only (already scoped to "Debian Prod" above).
+3. **Bind mounts `./data/adguard/{conf,work}`**: same SELinux `:Z` open item as every prior phase's bind mounts — verify on first prod deploy.
+4. **Root inside container**: `adguard/adguardhome` runs as root in-container (needed to bind privileged-range port 53 without relying solely on the host sysctl change, and to manage its own file permissions). Under rootless Podman, that root maps to the running user's uid via user-namespace remapping — `./data/adguard/` ends up owned by that mapped uid, consistent with the `--numeric-ids` backup design used throughout.
+
+### Files to Change (pending approval)
+- update `docker-compose.yml` — add `adguard` service (`image: adguard/adguardhome:latest`, `53:53/tcp`, `53:53/udp`, `3001:3000`, `./data/adguard/conf:/opt/adguardhome/conf`, `./data/adguard/work:/opt/adguardhome/work`, homelab-net) and append `./data/adguard:/sources/adguard:ro` to `backup` service volumes
+- `docker-compose.override.yml` — **no changes** (all AdGuard ports already in base, see rationale above)
+- `.env.example` — **no changes** (no subdomain/tunnel needed, see rationale above)
+- update `deployment.md`:
+  - new "AdGuard Host Prerequisites" section: static IP via netplan, `99-unprivileged-port.conf` sysctl, `systemd-resolved` stub disable
+  - step 4 (pre-create data directories): add `./data/adguard/{conf,work}`
+  - step 6 (zero-ports note): document `53` and `3001` as additional intentional base-compose exceptions (alongside Gitea's `2222`)
+  - step 9 (verify checklist): add AdGuard DNS resolution check (`dig @192.168.1.10 example.com`) and UI check (`http://192.168.1.10:3001`)
+- update `README.md`:
+  - add `adguard` row to Services table — image `adguard/adguardhome`, no subdomain (LAN-only), dev port `3001`, data dir `./data/adguard`
+  - add `http://localhost:3001` to Dev Quickstart section
+  - no new rows needed in the `.env` variables table (no new vars)
+
+Status: ✅ implemented, committed.
