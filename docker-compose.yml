@@ -79,6 +79,8 @@ services:
     build: ./backup
     container_name: backup
     restart: unless-stopped
+    environment:
+      - BACKUP_REQUIRE_MOUNT=${BACKUP_REQUIRE_MOUNT:-false}
     volumes:
       - ${BACKUP_DEST_PATH}:/backup
       - ./data/portainer:/sources/portainer:ro

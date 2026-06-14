@@ -650,3 +650,130 @@ This makes the backup destination a fixed, predictable property of the host — 
 - `.env.example` — **no changes**
 
 Status: ✅ implemented, committed.
+
+---
+
+## Phase 10: Hardened USB Backup Storage & Mount-Guard
+
+### Goal
+Close a silent-data-loss gap in the Phase 2 backup sidecar: if `/mnt/usb-disk` is not actually mounted, `backup.sh` currently rsyncs straight onto the host's root filesystem with no error. This phase adds a mount guard to `backup.sh`, an `ext4` + `x-systemd.automount` fstab recipe (superseding Phase 9's basic fstab entry), and a dev/prod-aware `BACKUP_REQUIRE_MOUNT` toggle so the guard doesn't fire against `./mock-usb` in dev.
+
+### Critical Gap: `backup.sh` Has No Mount Check
+Current flow when `/mnt/usb-disk` is **not** mounted on the host:
+- `/mnt/usb-disk` exists as an empty directory (created once, per Phase 9 step 2).
+- The compose volume `${BACKUP_DEST_PATH}:/backup` binds the container's `/backup` to that empty *host directory* — not the USB filesystem.
+- `backup.sh` sees `/backup` as a normal writable directory and runs `rsync` successfully.
+- All service data gets rsync'd onto the host's **root filesystem** under `/mnt/usb-disk/...`. The USB receives nothing.
+- No error, no log entry, no alert. Root filesystem fills up silently over time — on a small 2013-laptop disk, this can eventually take down the whole stack.
+
+### The Fix: `mountpoint -q` Guard
+```sh
+# Safety: abort if /backup is not a real mount point.
+# Without this, a missing USB mount would silently rsync all data onto
+# the host's root filesystem instead of the USB drive.
+if [ "$BACKUP_REQUIRE_MOUNT" = "true" ] && ! mountpoint -q "$DEST_ROOT"; then
+  echo "[$(date)] ERROR: $DEST_ROOT is not a mount point. USB drive not mounted? Aborting backup to prevent filling host filesystem." >> /var/log/backup.log
+  exit 1
+fi
+```
+Placed at the top of `backup.sh`, before the `rsync` loop.
+
+**Why `mountpoint -q` and not the alternatives:**
+- **`[ -d "$DEST_ROOT" ]` (directory exists)** — always true in the failure scenario above; the empty placeholder directory *is* a directory. This check would pass even when the USB is unmounted — useless as a guard.
+- **`[ -w "$DEST_ROOT" ]` (writable)** — also always true; the host directory is owned by the host user and writable regardless of whether the USB is mounted over it. Would also pass in the failure scenario.
+- **`mountpoint -q "$DEST_ROOT"`** — checks whether `$DEST_ROOT` is the root of a *distinct mounted filesystem* (compares device/inode of the path against its parent). This is the only check that actually distinguishes "USB mounted here" from "empty placeholder directory" — exactly the failure mode in question. `-q` suppresses output; only the exit code is used. `mountpoint` is a busybox applet, already present in the `alpine:latest` base image — no new package needed.
+
+**Exit paths:**
+- **Guard passes** (`/backup` is a real mountpoint, or `BACKUP_REQUIRE_MOUNT != "true"`) — script proceeds to the existing `rsync` loop as today.
+- **Guard fails** (`BACKUP_REQUIRE_MOUNT=true` and `/backup` is not a mountpoint) — logs a clear timestamped error to `/var/log/backup.log` and `exit 1`. The cron job's `>> /var/log/backup.log 2>&1` redirect (per `backup/crontab`) captures this; `crond -f -l 2` surfaces it in `podman logs backup`. The container itself keeps running (cron daemon is PID 1, unaffected by one job's exit code) — next scheduled run (03:00) retries the same check, so once the USB is mounted, backups resume automatically with no container restart needed.
+
+### USB Setup (Host-Side)
+
+#### Filesystem Choice: `ext4`
+`ext4` is required, not just recommended, given `backup.sh`'s `rsync -aAXH --numeric-ids` flags (Phase 2):
+- `-A` (ACLs) and `-X` (extended attributes) have **no equivalent on FAT32/exFAT** — rsync would silently drop these attributes on every backup, breaking Phase 2's "drop-in restore, zero permission errors" guarantee.
+- Native Linux filesystem — no extra drivers/packages on Debian/Ubuntu.
+- Journaling avoids `fsck` delays after an unclean unmount (power loss is a real scenario on this hardware).
+
+#### Formatting a Fresh Drive (destructive — one-time)
+```sh
+lsblk -f   # identify the correct partition first — check LABEL/SIZE carefully
+sudo mkfs.ext4 -L homelab-backup /dev/sdX1   # replace /dev/sdX1 with the actual partition
+```
+**This destroys all existing data on the partition.** The `-L homelab-backup` label lets you re-identify the correct drive later via `lsblk -f` (LABEL column) — important once multiple USB devices are involved, to avoid formatting the wrong one.
+
+#### UUID-Based fstab with `x-systemd.automount`
+```sh
+lsblk -f                  # note UUID and FSTYPE (ext4) of the labeled partition
+sudo mkdir -p /mnt/usb-disk
+```
+`/etc/fstab` entry:
+```
+UUID=<uuid> /mnt/usb-disk ext4 defaults,nofail,x-systemd.automount 0 2
+```
+- **`nofail`** — boot continues even if the USB is unplugged. Without this, a missing drive can hang/fail the boot entirely, preventing *every* service (including AdGuard DNS) from starting — unacceptable for a drive that's removable by design.
+- **`x-systemd.automount`** — systemd mounts `/mnt/usb-disk` on first access rather than unconditionally at boot. Combined with `nofail`, this is the cleanest behavior: if the drive isn't present, the mount is simply skipped at boot (no error, no hang); the `backup.sh` guard above is what actually catches the missing mount, at the time it matters (backup run).
+- **`0 2`** — no `dump`; `fsck` after the root filesystem on boot (standard for secondary partitions).
+- **No `uid=`/`gid=`** — these are vfat/exfat/ntfs-3g mount options. ext4 stores ownership in on-disk inodes, not as a mount-time mapping; `uid=`/`gid=` on an ext4 fstab line are ignored or rejected. Ownership is set once via `chown` after mounting (next step) — same mechanism as the existing Phase 9 step 5, carried forward unchanged.
+
+Mount and set ownership:
+```sh
+sudo mount -a
+sudo chown -R 1000:1000 /mnt/usb-disk
+df -h                  # confirm /mnt/usb-disk, correct size
+ls -la /mnt/usb-disk   # confirm owned by uid 1000
+```
+
+### `run.sh` Integration
+New step inserted between the linger/systemd-enable step and the final `podman-compose up -d` step (renumbered `[n/7]` → `[n/8]`):
+```sh
+echo "==> [7/8] Checking USB backup mount..."
+if ! mountpoint -q /mnt/usb-disk; then
+  echo "WARNING: /mnt/usb-disk is not mounted. Backup will not write to USB."
+  echo "Ensure fstab entry is correct and run: sudo mount -a"
+  echo "Continuing stack bring-up — backup container will abort each run"
+  echo "until the drive is mounted. See deployment.md Phase 9/10."
+else
+  echo "/mnt/usb-disk mounted OK."
+fi
+```
+**Warning, not abort** — `cloudflared`, AdGuard, Gitea, n8n, etc. must still come up even if the USB isn't ready yet. Only the `backup` container's scheduled rsync runs are affected, and now fail *safely* (via the `backup.sh` guard) instead of silently writing to the host root filesystem.
+
+### Dev vs Prod: `BACKUP_REQUIRE_MOUNT`
+
+| Setting | Dev (macOS) | Prod (Ubuntu) |
+|---|---|---|
+| `BACKUP_DEST_PATH` | `./mock-usb` | `/mnt/usb-disk` |
+| `BACKUP_REQUIRE_MOUNT` | `false` | `true` |
+| Mount guard behavior | skipped — `./mock-usb` is intentionally a plain dir, not a mountpoint | enforced — `/backup` must be a real mountpoint or backup aborts |
+
+`./mock-usb` is deliberately a plain directory (Phase 2 dev convenience) — `mountpoint -q ./mock-usb` would always fail there, so the guard must be opt-in via env var, not unconditional.
+
+`.env.example` addition:
+```
+BACKUP_REQUIRE_MOUNT=false   # dev: mock-usb is a plain dir, skip guard
+# BACKUP_REQUIRE_MOUNT=true  # prod: enforce USB mount — uncomment on server
+```
+
+`docker-compose.yml` — `backup` service gains:
+```yaml
+environment:
+  - BACKUP_REQUIRE_MOUNT=${BACKUP_REQUIRE_MOUNT:-false}
+```
+The `:-false` default means dev works out of the box with no `.env` change; prod must explicitly set `BACKUP_REQUIRE_MOUNT=true`.
+
+### Docker ↔ Podman Compatibility Notes
+1. `mountpoint` is a busybox applet already present in `alpine:latest` — no Dockerfile change, identical on both platforms.
+2. `environment:` var with `${VAR:-default}` compose syntax — identical behavior in `docker-compose` and `podman-compose`.
+3. `x-systemd.automount` and `/etc/fstab` are host-OS concepts — Debian/Ubuntu prod only, no macOS equivalent (macOS dev continues using `./mock-usb`, a plain bind-mounted directory, unaffected by this phase).
+
+### Files to Change (pending approval)
+- `backup/backup.sh` — add `BACKUP_REQUIRE_MOUNT`-gated `mountpoint -q "$DEST_ROOT"` guard before the rsync loop
+- `docker-compose.yml` — add `environment: - BACKUP_REQUIRE_MOUNT=${BACKUP_REQUIRE_MOUNT:-false}` to the `backup` service
+- `.env.example` — add `BACKUP_REQUIRE_MOUNT=false` (dev) with prod `# BACKUP_REQUIRE_MOUNT=true` comment
+- `run.sh` — new "USB mount sanity check" step (warning-only) between the linger/systemd-enable step and the final `podman-compose up -d`; renumber `[n/7]` → `[n/8]`
+- `deployment.md` — rewrite "Phase 9: Persistent Backup Storage (USB)": `mkfs.ext4` formatting (destructive, `-L homelab-backup`), fstab `defaults,nofail,x-systemd.automount` (no `uid=`/`gid=` — ext4 ignores them), `sudo chown -R 1000:1000 /mnt/usb-disk` as the ownership step, `ext4` rationale (FAT32/exFAT xattr warning), reference to `backup.sh` mount guard + `BACKUP_REQUIRE_MOUNT`; update step 7 to mention new run.sh USB check
+- `README.md` — Backup & Restore section: note `ext4` requirement, `BACKUP_REQUIRE_MOUNT=true` in prod, mount-guard safe-abort behavior; add `BACKUP_REQUIRE_MOUNT` row (`false` / `true`) to the Environment Variables table
+- `architecture.md` — append this Phase 10 section; Phase 9 stays as-is (basic fstab rationale), Phase 10 supersedes its fstab recipe with the `ext4`/`x-systemd.automount` version and adds the mount-guard/`BACKUP_REQUIRE_MOUNT` layer on top
+
+Status: ✅ implemented, committed.

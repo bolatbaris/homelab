@@ -98,7 +98,7 @@ If not mounted yet, mount/fstab-entry the USB drive before first `up` — `backu
 chmod +x run.sh
 ./run.sh
 ```
-This single step consolidates everything that used to be manual: pre-creates `./data/*` directories (avoids uid-1000 `EACCES`), fixes `./data/n8n` ownership to uid 1000 via `podman unshare chown` (prevents an n8n crash loop under rootless Podman's uid mapping), clears port 53 for AdGuard (disables `systemd-resolved`'s stub listener, repoints `/etc/resolv.conf`), persists the rootless-Podman unprivileged-port sysctl, enables `loginctl linger` + `podman.socket` + `homelab.service` for autonomous boot, and finally runs `podman-compose up -d`.
+This single step consolidates everything that used to be manual: pre-creates `./data/*` directories (avoids uid-1000 `EACCES`), fixes `./data/n8n` ownership to uid 1000 via `podman unshare chown` (prevents an n8n crash loop under rootless Podman's uid mapping), clears port 53 for AdGuard (disables `systemd-resolved`'s stub listener, repoints `/etc/resolv.conf`), persists the rootless-Podman unprivileged-port sysctl, enables `loginctl linger` + `podman.socket` + `homelab.service` for autonomous boot, checks whether `/mnt/usb-disk` is mounted (warns but doesn't block if not — see Phase 9), and finally runs `podman-compose up -d`.
 
 ---
 
@@ -122,34 +122,44 @@ This section hardens the USB backup drive mount before `run.sh`/`podman-compose 
 ```sh
 lsblk -f
 ```
-Note the `UUID` and `FSTYPE` (e.g. `ext4`) of the target USB partition.
+Note the `UUID`, `FSTYPE`, and `LABEL` of the target USB partition. Check carefully — the next step is destructive if pointed at the wrong device.
 
-### 2. Create the mount point
+### 2. Format a fresh drive (skip if already `ext4` with data you want to keep)
+```sh
+sudo mkfs.ext4 -L homelab-backup /dev/sdX1   # replace /dev/sdX1 with the actual partition
+```
+**This destroys all existing data on the partition.** `ext4` is required (not optional) — `backup.sh`'s `rsync -aAXH` flags (Phase 2) preserve ACLs (`-A`) and extended attributes (`-X`), which FAT32/exFAT don't support; using either would silently drop those attributes on every backup and break the "drop-in restore, zero permission errors" guarantee. The `-L homelab-backup` label makes the drive identifiable later via `lsblk -f`'s `LABEL` column — important once multiple USB devices are in play, to avoid formatting the wrong one next time.
+
+### 3. Create the mount point
 ```sh
 sudo mkdir -p /mnt/usb-disk
 ```
 
-### 3. Add persistent fstab entry
-Edit `/etc/fstab`, add (replace `<uuid>` and `<fstype>` from step 1):
+### 4. Add persistent fstab entry
+Edit `/etc/fstab`, add (replace `<uuid>` from step 1; filesystem is `ext4`):
 ```
-UUID=<uuid> /mnt/usb-disk <fstype> defaults,nofail,uid=1000,gid=1000 0 2
+UUID=<uuid> /mnt/usb-disk ext4 defaults,nofail,x-systemd.automount 0 2
 ```
-- `nofail` — boot doesn't hang/fail if drive is unplugged.
-- `uid=1000,gid=1000` — host user (matching rootless Podman's uid mapping) owns all files, no per-restore `chown`.
+- `nofail` — boot doesn't hang/fail if the drive is unplugged; without this, a missing USB can prevent the *entire* stack (including AdGuard DNS) from starting.
+- `x-systemd.automount` — systemd mounts on first access rather than at boot. Combined with `nofail`, a missing drive is skipped silently at boot — the `backup.sh` mount guard (below) is what actually catches it, at the time it matters.
+- No `uid=`/`gid=` — these are vfat/exfat/ntfs-3g mount options. `ext4` stores ownership in its inodes, not as a mount-time mapping; set ownership via `chown` (next step) instead.
 
-### 4. Mount and verify
+### 5. Mount and set ownership
 ```sh
 sudo mount -a
-df -h
-```
-Confirm `/mnt/usb-disk` appears, mounted, with expected size.
-
-### 5. Ownership sanity check
-```sh
-sudo chown -R $USER:$USER /mnt/usb-disk
+sudo chown -R 1000:1000 /mnt/usb-disk
+df -h                  # confirm /mnt/usb-disk, expected size
+ls -la /mnt/usb-disk   # confirm owned by uid 1000
 ```
 
 After this, step 6's `mount | grep usb-disk` check should pass permanently across reboots.
+
+### Mount Guard: `backup.sh` Won't Silently Write to the Host Disk
+`backup/backup.sh` checks `mountpoint -q /backup` before running `rsync`, gated by `BACKUP_REQUIRE_MOUNT` (set in `.env`):
+- **`BACKUP_REQUIRE_MOUNT=true`** (prod, set this in `.env`) — if `/mnt/usb-disk` isn't actually mounted, the backup run logs an error to `/var/log/backup.log` and exits, **instead of** rsyncing all service data onto the host's root filesystem. The container keeps running; the next scheduled run (03:00) retries automatically once the drive is mounted — no restart needed.
+- **`BACKUP_REQUIRE_MOUNT=false`** (dev default) — guard skipped, since `./mock-usb` is intentionally a plain directory, not a mountpoint.
+
+`run.sh` step 7 also runs a non-fatal `mountpoint -q /mnt/usb-disk` check on every bring-up and prints a warning if the USB isn't mounted — the rest of the stack still starts either way.
 
 ---
 

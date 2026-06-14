@@ -27,7 +27,7 @@ git clone <repo-url> ~/homelab && cd ~/homelab
 cp .env.example .env && nano .env   # fill in TUNNEL_TOKEN at minimum
 chmod +x run.sh && ./run.sh
 ```
-`run.sh` is the single host-preparation + launch step: creates `./data/*` dirs, fixes Debian's port-53 conflict (AdGuard vs `systemd-resolved`), persists the rootless-Podman sysctl for binding port 53, enables boot-persistence (`loginctl linger` + `podman-restart.service`), and brings up the full stack. See [deployment.md](deployment.md) for the full annotated checklist (static IP, sensors, USB backup mount — the parts `run.sh` intentionally doesn't touch).
+`run.sh` is the single host-preparation + launch step: creates `./data/*` dirs, fixes Debian's port-53 conflict (AdGuard vs `systemd-resolved`), persists the rootless-Podman sysctl for binding port 53, enables boot-persistence (`loginctl linger` + `homelab.service`), checks the USB backup mount, and brings up the full stack. See [deployment.md](deployment.md) for the full annotated checklist (static IP, sensors, USB backup mount — the parts `run.sh` intentionally doesn't touch).
 
 ### Dev (macOS)
 ```sh
@@ -56,6 +56,7 @@ Production (Linux) auto-starts the full stack on every boot/power recovery via a
 |---|---|---|
 | `TUNNEL_TOKEN` | Cloudflare Tunnel token (required, never commit) | same |
 | `BACKUP_DEST_PATH` | `./mock-usb` | `/mnt/usb-disk` |
+| `BACKUP_REQUIRE_MOUNT` | `false` | `true` |
 | `BASE_DOMAIN` | `localcloud.example` | same |
 | `PORTAINER_SUBDOMAIN` | `portainer` | same |
 | `MONITOR_SUBDOMAIN` | `monitor` | same |
@@ -66,6 +67,10 @@ Production (Linux) auto-starts the full stack on every boot/power recovery via a
 ## Backup & Restore
 
 The `backup` container rsyncs every `./data/<service>` directory to `BACKUP_DEST_PATH` nightly at 03:00 Europe/Istanbul, preserving permissions/ownership/ACLs/xattrs via `--numeric-ids` (see [architecture.md](architecture.md) Phase 2).
+
+**Prod requirements** (see [deployment.md](deployment.md) Phase 9):
+- The USB drive must be formatted `ext4` — FAT32/exFAT don't support the ACLs/xattrs the backup relies on.
+- Set `BACKUP_REQUIRE_MOUNT=true` in prod `.env`. With this set, `backup.sh` checks that `/mnt/usb-disk` is a real mountpoint before every run — if the USB is unmounted, the backup safely aborts (logs an error, retries next cycle) instead of silently writing backup data onto the host's root filesystem.
 
 **Restore on a new host:**
 1. Copy backed-up `<service>/` dirs back into `./data/<service>/`.
