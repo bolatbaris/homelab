@@ -534,3 +534,28 @@ Picked up automatically by the existing generic `/sources/*` loop — **zero `ba
   - no new rows needed in the `.env` variables table (no new vars)
 
 Status: ✅ implemented, committed.
+
+---
+
+## Phase 9: Persistent Backup Storage (USB)
+
+### Goal
+Guarantee `/mnt/usb-disk` (the `backup` container's `BACKUP_DEST_PATH`) is a stable, writable mount point that survives reboots and USB re-enumeration — the backup container must never start against a missing or wrong destination.
+
+### Rationale: UUID-based fstab vs `/dev/sdX`
+Linux assigns `/dev/sdX` (or `/dev/sdaX`) names by enumeration order at boot — this order isn't guaranteed, especially with multiple USB devices or after a drive is unplugged/replugged into a different port. A `/etc/fstab` entry keyed on `/dev/sdX` can silently mount the *wrong* device, or fail to mount at all, after a reboot.
+
+Filesystem UUIDs are generated at format time and embedded in the filesystem itself — they don't change regardless of port, enumeration order, or which other USB devices are attached. Mounting by `UUID=` in `/etc/fstab` guarantees `/mnt/usb-disk` always points at the correct physical drive.
+
+Combined with:
+- **`nofail`** — if the drive is ever missing at boot, the system still boots normally (the `backup` container will simply fail to find `/mnt/usb-disk` and can be addressed manually, rather than the whole host hanging on a missing mount).
+- **`uid=1000,gid=1000`** — the mount itself is owned by the host's uid 1000 (the same uid rootless Podman maps container processes to, per Phase 2/n8n precedent), so the `backup` container's bind mount (`${BACKUP_DEST_PATH}:/backup`) is always writable without per-boot `chown`.
+
+This makes the backup destination a fixed, predictable property of the host — `docker-compose.yml` and `.env` (`BACKUP_DEST_PATH=/mnt/usb-disk`, set in Phase 2) need no changes; this phase only hardens the host-side mount that path already assumed existed.
+
+### Files to Change (pending approval)
+- update `deployment.md` — new "Phase 9: Persistent Backup Storage (USB)" section (identify via `lsblk -f`, create mount point, `/etc/fstab` UUID entry with `nofail,uid=1000,gid=1000`, `mount -a` + `df -h` verify, `chown`)
+- `docker-compose.yml` — **no changes** (`BACKUP_DEST_PATH=/mnt/usb-disk` already wired in Phase 2)
+- `.env.example` — **no changes**
+
+Status: ✅ implemented, committed.

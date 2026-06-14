@@ -114,6 +114,45 @@ This single step consolidates everything that used to be manual: pre-creates `./
 
 ---
 
+## Phase 9: Persistent Backup Storage (USB)
+
+This section hardens the USB backup drive mount before `run.sh`/`podman-compose up` — do this once, before step 7, on first bring-up (or whenever the drive is replaced).
+
+### 1. Identify the partition
+```sh
+lsblk -f
+```
+Note the `UUID` and `FSTYPE` (e.g. `ext4`) of the target USB partition.
+
+### 2. Create the mount point
+```sh
+sudo mkdir -p /mnt/usb-disk
+```
+
+### 3. Add persistent fstab entry
+Edit `/etc/fstab`, add (replace `<uuid>` and `<fstype>` from step 1):
+```
+UUID=<uuid> /mnt/usb-disk <fstype> defaults,nofail,uid=1000,gid=1000 0 2
+```
+- `nofail` — boot doesn't hang/fail if drive is unplugged.
+- `uid=1000,gid=1000` — host user (matching rootless Podman's uid mapping) owns all files, no per-restore `chown`.
+
+### 4. Mount and verify
+```sh
+sudo mount -a
+df -h
+```
+Confirm `/mnt/usb-disk` appears, mounted, with expected size.
+
+### 5. Ownership sanity check
+```sh
+sudo chown -R $USER:$USER /mnt/usb-disk
+```
+
+After this, step 6's `mount | grep usb-disk` check should pass permanently across reboots.
+
+---
+
 ## Why no `podman generate systemd`?
 Earlier drafts of this runbook generated a separate systemd unit per container. That's now replaced by two host-level primitives, set up once by `run.sh`:
 - **`loginctl enable-linger $USER`** — keeps the user's systemd instance (and its containers) running after logout/reboot, without requiring a login session.
