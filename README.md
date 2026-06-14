@@ -19,6 +19,8 @@ Production deploy checklist: [deployment.md](deployment.md).
 
 All services share the `homelab-net` bridge network. Dev ports come from `docker-compose.override.yml` (auto-merged); production deletes/renames that file to stay zero-ports (see [deployment.md](deployment.md)).
 
+**AdGuard DNS port binding**: AdGuard's port-53 mapping is intentionally bound to the host's LAN IP only (`192.168.1.10:53:53`), not `0.0.0.0:53`. This is required so AdGuard doesn't shadow Podman's embedded DNS (`aardvark-dns`, on the bridge gateway `10.89.0.1:53`), which `cloudflared` depends on to resolve container-name origins (`http://portainer:9000`, etc.) — binding to all interfaces causes every tunnel hostname to 502. **`192.168.1.10` must be static** (DHCP reservation on the router, or the static netplan config from architecture.md Phase 7) — if the host's IP changes, AdGuard will fail to bind and fail to start. See [deployment.md](deployment.md) troubleshooting and architecture.md Phase 7 "DNS Port Binding" for details.
+
 ## Quick Start
 
 ### Production (Debian, rootless Podman) — Clean Slate

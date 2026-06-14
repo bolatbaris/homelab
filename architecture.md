@@ -473,15 +473,29 @@ echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
 - Port 53 (DNS) **must be in base `docker-compose.yml`**, not just override — DNS has to work in prod:
   ```yaml
   ports:
-    - "53:53/tcp"
-    - "53:53/udp"
+    - "192.168.1.10:53:53/tcp"
+    - "192.168.1.10:53:53/udp"
     - "3001:80"
   ```
+  **DNS port is bound to the host LAN IP, not `0.0.0.0`** — see "DNS Port Binding: Why Not `53:53`" below. `192.168.1.10` must stay static (Phase 7 netplan config above) or AdGuard fails to start if the host's IP changes.
 - Two bind mounts:
   ```yaml
   - ./data/adguard/conf:/opt/adguardhome/conf
   - ./data/adguard/work:/opt/adguardhome/work
   ```
+
+### DNS Port Binding: Why Not `53:53`
+Podman's embedded DNS (`aardvark-dns`) resolves container names (e.g. `portainer`, `gitea`) for every container on `homelab-net`, and listens on the bridge network's gateway address (`10.89.0.1:53`). `cloudflared` depends on this — its Cloudflare Tunnel config uses container-name origins like `http://portainer:9000`, resolved via `10.89.0.1`.
+
+`"53:53"` (no host IP) binds to **all interfaces**, including `10.89.0.1` — AdGuard then captures container-name lookups too. AdGuard doesn't know container names, returns NXDOMAIN, and `cloudflared` can't resolve any origin → every public hostname returns **502 Bad Gateway**.
+
+Binding to `192.168.1.10:53` instead — the host's LAN-facing static IP — gives AdGuard exactly the interface it needs to serve DNS to LAN clients, **without** shadowing `10.89.0.1:53`, so `aardvark-dns` keeps resolving container names for `cloudflared`. The port number stays `53` (LAN devices' DHCP-assigned DNS server can't specify a port); only the bind address narrows from `0.0.0.0` to the host's static IP.
+
+**Diagnosing this class of bug:**
+```sh
+sudo ss -tulpn | grep ':53'                                                  # AdGuard should show 192.168.1.10:53, not *:53
+podman run --rm --net homelab_homelab-net alpine nslookup portainer 10.89.0.1  # must resolve, not NXDOMAIN
+```
 
 ### Web UI: LAN-Only, Never Internet
 **No `ADGUARD_SUBDOMAIN` in `.env`, no Cloudflare Public Hostname rule for this service — deliberate, not an oversight.** AdGuard's web UI is the control panel for the network's DNS/ad-blocking — exposing it to the internet would let anyone who finds the subdomain attempt to log in and repoint every device's DNS resolution. Since its entire purpose is *local* network service, LAN-only access is both sufficient and strictly safer; the tunnel pattern used for Portainer/Gitea/n8n/Glances is intentionally **not** repeated here.
@@ -516,7 +530,7 @@ Picked up automatically by the existing generic `/sources/*` loop — **zero `ba
 **Tuning note (not a blocker)**: `work/`'s query-log DB grows continuously. AdGuard's UI has a log-retention setting (Settings → General → query log retention) — set a sane window (e.g. 7-30 days) to bound backup size over time. Not required for initial setup, worth doing once the UI is up.
 
 ### Docker ↔ Podman Compatibility Notes
-1. **Port 53 binding (sysctl change) is Linux-only.** On macOS, podman runs inside a Linux VM (podman machine) — the same `net.ipv4.ip_unprivileged_port_start` mechanism applies *inside that VM*, but it's untested here; flagging as something to verify on first dev `up` (binding `53:53` may just work inside the VM, or may need the same sysctl tweak run via `podman machine ssh`).
+1. **Port 53 binding (sysctl change) is Linux-only.** On macOS, podman runs inside a Linux VM (podman machine) — the same `net.ipv4.ip_unprivileged_port_start` mechanism applies *inside that VM*, but it's untested here; flagging as something to verify on first dev `up` (binding `53:53` may just work inside the VM, or may need the same sysctl tweak run via `podman machine ssh`). **Note**: the prod port mapping is now `192.168.1.10:53:53` (host LAN IP only, see "DNS Port Binding" above) — `192.168.1.10` is the Debian prod host's static IP and won't exist on a macOS dev machine. Dev `up` will fail to bind this port as-written; dev users should override to `"53:53"` (or the podman-machine VM's IP) in `docker-compose.override.yml` if testing AdGuard DNS locally.
 2. **`systemd-resolved` / `/etc/resolv.conf`**: macOS has neither — no dev-side action needed, these steps are prod-only (already scoped to "Debian Prod" above).
 3. **Bind mounts `./data/adguard/{conf,work}`**: same SELinux `:Z` open item as every prior phase's bind mounts — verify on first prod deploy.
 4. **Root inside container**: `adguard/adguardhome` runs as root in-container (needed to bind privileged-range port 53 without relying solely on the host sysctl change, and to manage its own file permissions). Under rootless Podman, that root maps to the running user's uid via user-namespace remapping — `./data/adguard/` ends up owned by that mapped uid, consistent with the `--numeric-ids` backup design used throughout.
@@ -535,7 +549,7 @@ Picked up automatically by the existing generic `/sources/*` loop — **zero `ba
   - add `http://localhost:3001` to Dev Quickstart section
   - no new rows needed in the `.env` variables table (no new vars)
 
-Status: ✅ implemented, committed. Port corrected: 3001:3000 → 3001:80 (port 3000 is setup wizard only; permanent web UI is port 80).
+Status: ✅ implemented, committed. Port corrected: 3001:3000 → 3001:80 (port 3000 is setup wizard only; permanent web UI is port 80). DNS port corrected: 53:53 → 192.168.1.10:53:53 (0.0.0.0:53 shadowed aardvark-dns on 10.89.0.1, breaking cloudflared container-name resolution → 502 on all tunnel hostnames).
 
 ---
 

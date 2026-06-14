@@ -114,6 +114,23 @@ This single step consolidates everything that used to be manual: pre-creates `./
 
 ---
 
+## Troubleshooting
+
+### 502 on all tunnel hostnames
+Check that AdGuard is not bound to `0.0.0.0:53`; it must be `<LAN_IP>:53` (e.g. `192.168.1.10:53`) so `aardvark-dns` owns the bridge gateway (`10.89.0.1:53`) for container-name resolution. If AdGuard captures `10.89.0.1:53`, `cloudflared` can't resolve container-name origins (`http://portainer:9000`) and every public hostname returns 502.
+
+Diagnose:
+```sh
+sudo ss -tulpn | grep ':53'
+# AdGuard should show 192.168.1.10:53, not *:53 / 0.0.0.0:53
+
+podman run --rm --net homelab_homelab-net alpine nslookup portainer 10.89.0.1
+# must resolve to portainer's container IP, not NXDOMAIN
+```
+Fix: ensure `docker-compose.yml`'s `adguard` service maps `"192.168.1.10:53:53/tcp"` and `"192.168.1.10:53:53/udp"` (not `"53:53"`), then restart the stack. See architecture.md Phase 7 "DNS Port Binding" for full rationale.
+
+---
+
 ## Phase 9: Persistent Backup Storage (USB)
 
 This section hardens the USB backup drive mount before `run.sh`/`podman-compose up` — do this once, before step 7, on first bring-up (or whenever the drive is replaced).
