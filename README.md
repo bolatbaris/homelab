@@ -46,6 +46,10 @@ Note: temperature sensors will show empty/N/A in the macOS podman VM — expecte
 
 Note: AdGuard DNS (port 53) may require a sysctl tweak inside the podman machine VM on macOS — see architecture.md Phase 7 if port 53 binding fails on first dev up. (`run.sh` is Debian-only; don't run it on macOS — it edits `/etc/resolv.conf` and `systemd-resolved` config that don't apply there.)
 
+## Boot Persistence
+
+Production (Linux) auto-starts the full stack on every boot/power recovery via a committed systemd user service, [systemd/homelab.service](systemd/homelab.service) — enabled once by `run.sh` (`loginctl enable-linger` + `systemctl --user enable --now homelab.service`). See [deployment.md](deployment.md) for manual enable/verify/troubleshooting commands. This is Linux/prod-only — macOS dev has no systemd, start manually with `podman-compose up -d` as shown above.
+
 ## Environment Variables (`.env`)
 
 | Variable | Dev (macOS) | Prod (Debian) |

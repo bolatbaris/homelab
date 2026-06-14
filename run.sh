@@ -26,12 +26,15 @@ echo "==> [5/7] Allowing rootless Podman to bind port 53..."
 echo "net.ipv4.ip_unprivileged_port_start=53" | sudo tee /etc/sysctl.d/99-rootless-ports.conf >/dev/null
 sudo sysctl --system
 
-echo "==> [6/7] Enabling linger + podman services for autonomous boot..."
+echo "==> [6/7] Enabling linger + podman.socket + homelab.service for autonomous boot..."
 loginctl enable-linger "$USER"
 systemctl --user enable --now podman.socket
-systemctl --user enable --now podman-restart.service
+mkdir -p ~/.config/systemd/user
+ln -sf "$(pwd)/systemd/homelab.service" ~/.config/systemd/user/homelab.service
+systemctl --user daemon-reload
+systemctl --user enable --now homelab.service
 
-echo "==> [7/7] Starting the stack..."
+echo "==> [7/7] Starting the stack (homelab.service already started it; no-op if already up)..."
 podman-compose up -d
 
 echo "==> Done. Run 'podman-compose ps' to check status."

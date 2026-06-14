@@ -98,12 +98,12 @@ If not mounted yet, mount/fstab-entry the USB drive before first `up` — `backu
 chmod +x run.sh
 ./run.sh
 ```
-This single step consolidates everything that used to be manual: pre-creates `./data/*` directories (avoids uid-1000 `EACCES`), fixes `./data/n8n` ownership to uid 1000 via `podman unshare chown` (prevents an n8n crash loop under rootless Podman's uid mapping), clears port 53 for AdGuard (disables `systemd-resolved`'s stub listener, repoints `/etc/resolv.conf`), persists the rootless-Podman unprivileged-port sysctl, enables `loginctl linger` + `podman.socket` + `podman-restart.service` for autonomous boot, and finally runs `podman-compose up -d`.
+This single step consolidates everything that used to be manual: pre-creates `./data/*` directories (avoids uid-1000 `EACCES`), fixes `./data/n8n` ownership to uid 1000 via `podman unshare chown` (prevents an n8n crash loop under rootless Podman's uid mapping), clears port 53 for AdGuard (disables `systemd-resolved`'s stub listener, repoints `/etc/resolv.conf`), persists the rootless-Podman unprivileged-port sysctl, enables `loginctl linger` + `podman.socket` + `homelab.service` for autonomous boot, and finally runs `podman-compose up -d`.
 
 ---
 
 ## 8. Verify
-- `systemctl --user status podman.socket` and `podman-restart.service` — both active/enabled
+- `systemctl --user status podman.socket` and `homelab.service` — both active/enabled
 - `podman-compose ps` — all 7 containers `Up`
 - Cloudflare Zero Trust dashboard → tunnel shows "Healthy"
 - Visit `https://portainer.localcloud.example`, `https://monitor.localcloud.example`, `https://git.localcloud.example`, `https://n8n.localcloud.example` — all reachable
@@ -153,9 +153,31 @@ After this, step 6's `mount | grep usb-disk` check should pass permanently acros
 
 ---
 
-## Why no `podman generate systemd`?
-Earlier drafts of this runbook generated a separate systemd unit per container. That's now replaced by two host-level primitives, set up once by `run.sh`:
-- **`loginctl enable-linger $USER`** — keeps the user's systemd instance (and its containers) running after logout/reboot, without requiring a login session.
-- **`podman-restart.service`** (a `--user` unit shipped with Podman) — on boot, restarts every container whose compose `restart:` policy says so (`unless-stopped`, used by every service in `docker-compose.yml`).
+## Boot Persistence (Auto-start)
 
-One enable-once host service covers all current and future containers — no per-container unit files to generate, track, or regenerate when the compose file changes.
+### Why not `podman generate systemd`?
+Per-container generated units (7 containers = 7 units to regenerate every time `docker-compose.yml` changes) and Podman Quadlets (compatibility risk on this box's older systemd/Podman, would replace the compose files entirely) were both rejected. Instead, a single committed unit, [`systemd/homelab.service`](systemd/homelab.service), runs `podman-compose up -d`/`down` for the whole stack — one file, no regeneration, covers any future service added to `docker-compose.yml` automatically. See architecture.md Phase 8 for full rationale.
+
+### What `run.sh` sets up (once, automatically)
+- **`loginctl enable-linger $USER`** — keeps the user's systemd instance (and its containers) running after logout/reboot, without requiring a login session. Without this, `homelab.service` never runs on a headless reboot.
+- **`podman.socket`** — rootless Podman API socket (used by Portainer and required by `homelab.service`'s `After=podman.socket` ordering).
+- **`homelab.service`** — symlinked from `systemd/homelab.service` into `~/.config/systemd/user/`, then `daemon-reload` + `enable --now`. On boot, starts the full stack via `podman-compose up -d`.
+
+### Manual operation
+Check status and logs:
+```sh
+systemctl --user status homelab.service
+journalctl --user -u homelab.service -f
+```
+
+Stop/start the stack **through systemd** (not `podman-compose` directly), so systemd's recorded state stays consistent with reality:
+```sh
+systemctl --user stop homelab.service
+systemctl --user start homelab.service
+```
+
+### Path verification
+`systemd/homelab.service` hardcodes `ExecStart=/usr/bin/podman-compose up -d` and `WorkingDirectory=%h/homelab`. If `podman-compose` lives elsewhere, check with `which podman-compose` and update `ExecStart=`/`ExecStop=` accordingly; if the repo isn't cloned to `~/homelab`, update `WorkingDirectory=`.
+
+### Relationship to `restart: unless-stopped`
+Complementary, not redundant: `restart: unless-stopped` (in `docker-compose.yml`) handles individual container crashes while Podman is already running. `homelab.service` handles the stack-level cold start after a reboot/power loss, when no Podman process exists yet.

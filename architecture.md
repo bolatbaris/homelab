@@ -537,6 +537,97 @@ Status: ✅ implemented, committed.
 
 ---
 
+## Phase 8: Boot Persistence (systemd User Service)
+
+### Goal
+The full homelab stack must auto-start on every boot and power recovery, with zero manual intervention. The systemd configuration is committed to the repository ("baked in") — versioned alongside the compose files, ready to enable on any fresh deploy without generating anything manually.
+
+### Problem: `restart: unless-stopped` doesn't survive reboot
+Podman's `restart: unless-stopped` policy (used by every service in `docker-compose.yml`) restarts a container if it *crashes* — but after a full reboot/power loss, no Podman process is running at all to apply that policy. Someone has to manually `cd ~/homelab && podman-compose up -d`. This phase closes that gap.
+
+### Approach: Single systemd User Service
+A single systemd **user** service unit, `systemd/homelab.service`, committed to the repo at that path. The unit runs `podman-compose up -d` from the homelab directory and is managed by the non-root user's systemd session (rootless Podman constraint — no root/system units involved).
+
+**Not used, and why:**
+- **`podman generate systemd`** — generates one unit per container (7 containers = 7 generated units to track/regenerate every time `docker-compose.yml` changes). Also deprecated/discouraged in newer Podman versions.
+- **Podman Quadlets** — would replace the compose files with `.container`/`.pod` unit files entirely; introduces Ubuntu-version compatibility risk on the 2013 laptop's older systemd/Podman versions, and abandons the compose-based workflow this repo is built around.
+
+A single compose-driving unit is the smallest, most maintainable surface: one file, no regeneration, works with any future service added to `docker-compose.yml` with zero changes to this unit.
+
+### `loginctl enable-linger` (critical prerequisite)
+By default, a user's systemd **user session** only exists while that user is logged in — on boot, with no interactive login, user units never start, no matter what they contain.
+
+```sh
+loginctl enable-linger <user>
+```
+
+This is a **one-time host command**, not a file — it's not part of the unit and isn't committed to the repo. It tells systemd-logind to start `<user>`'s systemd user instance at boot regardless of login state. **Without this, `systemd/homelab.service` does nothing on reboot** — it would only ever run if/when the user logs in. This is the single most critical enabler for this entire phase, and is handled by `run.sh`.
+
+### `systemd/homelab.service` — Unit File
+```ini
+[Unit]
+Description=Homelab podman-compose stack
+After=network-online.target podman.socket
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/homelab
+ExecStart=/usr/bin/podman-compose up -d
+ExecStop=/usr/bin/podman-compose down
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
+```
+
+**Field-by-field rationale:**
+- `After=network-online.target` + `Wants=network-online.target` — network must be fully up before starting; critical for AdGuard (binds port 53) and `cloudflared` (must reach Cloudflare's edge to establish the tunnel). `Wants=` ensures systemd actually pulls in and waits for this target, not just orders against it.
+- `After=podman.socket` — ensures the rootless Podman socket is ready before `podman-compose` runs (Portainer also depends on this socket).
+- `Type=oneshot` — `podman-compose up -d` starts containers detached and exits; systemd doesn't need to track a long-running process for *this* unit — the containers' own `restart: unless-stopped` policy handles them after.
+- `RemainAfterExit=yes` — tells systemd the service stays "active" after the oneshot exits, so `systemctl status` correctly shows it as running, and `systemctl stop` correctly triggers `ExecStop`.
+- `WorkingDirectory=%h/homelab` — `%h` expands to the user's home directory; keeps the unit portable across usernames without hardcoding `/home/<user>`.
+- `ExecStart=/usr/bin/podman-compose up -d` / `ExecStop=/usr/bin/podman-compose down` — full paths, since systemd units do not inherit `$PATH` from a user shell.
+- `Restart=on-failure` + `RestartSec=10s` — if `podman-compose up -d` itself fails (e.g. Podman socket not actually ready yet despite `After=` ordering), retry after a 10s backoff rather than tight-looping.
+- `TimeoutStartSec=120` — allows up to 2 minutes for all containers to start; first-run image pulls on 2013-era hardware can be slow.
+- `WantedBy=default.target` — the correct enable target for **user** services (the user-session equivalent of `multi-user.target`).
+
+### `podman-compose` Path Note
+`/usr/bin/podman-compose` may not be correct on every system — some installs place it in `/usr/local/bin/`. Verify with `which podman-compose` before relying on the unit; if it differs, update `ExecStart=`/`ExecStop=` in `systemd/homelab.service`. Similarly, `WorkingDirectory=%h/homelab` assumes the repo is cloned to `~/homelab` — if cloned elsewhere, update `WorkingDirectory=` in the unit file.
+
+### macOS Dev: Not Applicable
+systemd is Linux-only. macOS dev users continue to start the stack manually with `podman-compose up -d`, as before — **no dev-side changes**.
+
+### Docker ↔ Podman Compatibility Notes
+1. **Binary path (`podman-compose` vs `docker-compose`)**: prod uses `podman-compose`; if `docker-compose` is ever substituted, `ExecStart=`/`ExecStop=` paths in `systemd/homelab.service` must be updated to match.
+2. **`loginctl enable-linger`**: a systemd/logind concept, Linux-only — no macOS equivalent, no action needed in dev.
+3. **`network-online.target`**: on some minimal Ubuntu installs this target isn't pulled in by default. Verify/enable the network-manager-appropriate waiter:
+   ```sh
+   sudo systemctl enable systemd-networkd-wait-online.service
+   # or, if using NetworkManager instead of networkd:
+   sudo systemctl enable NetworkManager-wait-online.service
+   ```
+4. **Relationship to `restart: unless-stopped`**: these two layers are complementary, not redundant. `restart: unless-stopped` (in `docker-compose.yml`) handles *individual container crashes* while Podman is already running — Podman itself restarts the crashed container. `homelab.service` handles the *stack-level* cold start after a reboot/power loss, when no Podman process exists yet to apply any restart policy at all.
+
+### Supersedes: `podman-restart.service` Approach (Phase 7 / `run.sh`)
+This phase **replaces** the boot-persistence mechanism introduced alongside Phase 7 (`run.sh` enabling Podman's built-in `podman-restart.service`). Running both `podman-restart.service` and `homelab.service` would create two competing boot-start paths for the same containers (race/double-start risk). `run.sh` and `deployment.md` drop the `podman-restart.service` enable step in favor of enabling `homelab.service`. `loginctl enable-linger` and `systemctl --user enable --now podman.socket` remain required (linger for the reason above; `podman.socket` because Portainer talks to it and `homelab.service`'s `After=podman.socket` depends on it existing).
+
+### Files to Change (pending approval)
+- new `systemd/homelab.service` — the unit file above, committed to the repo
+- update `run.sh` — replace the `podman-restart.service` enable step with `systemctl --user daemon-reload` + `systemctl --user enable --now homelab.service`; keep `loginctl enable-linger` and `podman.socket` enable
+- update `deployment.md`:
+  - new "Boot Persistence (Auto-start)" section (replaces "Why no `podman generate systemd`?"): rationale, enable/verify/journalctl/stop-start commands, path-verification note
+  - step 7 description: `podman-restart.service` → `homelab.service`
+  - step 8 (Verify) checklist: `podman-restart.service` → `homelab.service`
+- update `README.md` — new "Boot Persistence" section pointing to `systemd/homelab.service` + deployment.md; Dev Quickstart note that auto-start is Linux/prod-only
+
+Status: ✅ implemented, committed.
+
+---
+
 ## Phase 9: Persistent Backup Storage (USB)
 
 ### Goal
