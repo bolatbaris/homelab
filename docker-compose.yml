@@ -68,7 +68,7 @@ services:
     ports:
       - "53:53/tcp"
       - "53:53/udp"
-      - "3001:3000"
+      - "3001:80"
     volumes:
       - ./data/adguard/conf:/opt/adguardhome/conf
       - ./data/adguard/work:/opt/adguardhome/work

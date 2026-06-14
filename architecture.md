@@ -475,7 +475,7 @@ echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
   ports:
     - "53:53/tcp"
     - "53:53/udp"
-    - "3001:3000"
+    - "3001:80"
   ```
 - Two bind mounts:
   ```yaml
@@ -486,11 +486,13 @@ echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
 ### Web UI: LAN-Only, Never Internet
 **No `ADGUARD_SUBDOMAIN` in `.env`, no Cloudflare Public Hostname rule for this service — deliberate, not an oversight.** AdGuard's web UI is the control panel for the network's DNS/ad-blocking — exposing it to the internet would let anyone who finds the subdomain attempt to log in and repoint every device's DNS resolution. Since its entire purpose is *local* network service, LAN-only access is both sufficient and strictly safer; the tunnel pattern used for Portainer/Gitea/n8n/Glances is intentionally **not** repeated here.
 
-### Port Mapping: Why `3001:3000`
-AdGuard's container listens on `3000` internally for its web UI. In dev, `docker-compose.override.yml` already maps host `3000` → Gitea. Rather than fight that conflict, AdGuard's host mapping is `3001:3000` — and crucially this is placed in the **base** `docker-compose.yml` (not override), because:
+### Port Mapping: Why `3001:80`
+AdGuard's container listens on `80` internally for its permanent web UI. In dev, `docker-compose.override.yml` already maps host `3000` → Gitea. Rather than fight that conflict, AdGuard's host mapping is `3001:80` — and crucially this is placed in the **base** `docker-compose.yml` (not override), because:
 - Prod needs it permanently (LAN users hit `http://192.168.1.10:3001`).
 - Dev gets it "for free" at `http://localhost:3001` without any override changes.
-- **`docker-compose.override.yml` needs zero changes for AdGuard** — every port it needs (`53/tcp`, `53/udp`, `3001:3000`) is already in the base file and applies identically in both environments (unlike Portainer/Glances/Gitea/n8n, whose base files are port-less and rely on override for dev access).
+- **`docker-compose.override.yml` needs zero changes for AdGuard** — every port it needs (`53/tcp`, `53/udp`, `3001:80`) is already in the base file and applies identically in both environments (unlike Portainer/Glances/Gitea/n8n, whose base files are port-less and rely on override for dev access).
+
+**Note**: `adguard/adguardhome` exposes two ports for different purposes: port `3000` serves the one-time setup wizard (only active before initial configuration is saved); port `80` serves the permanent web UI after setup completes. The correct mapping for ongoing use is `3001:80`. During first-run setup, the wizard is also reachable at host port `3001` because AdGuard listens on both `3000` and `80` simultaneously until setup is complete — after which port `3000` closes.
 
 ### `.env`: No Changes Needed
 No new variables required — no subdomain (LAN-only, per above), no tunnel routing, no per-env path differences for this service. Stated explicitly so it's clear this isn't a missed step.
@@ -533,7 +535,7 @@ Picked up automatically by the existing generic `/sources/*` loop — **zero `ba
   - add `http://localhost:3001` to Dev Quickstart section
   - no new rows needed in the `.env` variables table (no new vars)
 
-Status: ✅ implemented, committed.
+Status: ✅ implemented, committed. Port corrected: 3001:3000 → 3001:80 (port 3000 is setup wizard only; permanent web UI is port 80).
 
 ---
 
