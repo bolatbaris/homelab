@@ -1,5 +1,9 @@
 # LocalCloud Stack
 
+<p align="center">
+  <img src="logo.png" alt="LocalCloud Stack logo" width="180">
+</p>
+
 LocalCloud Stack is a self-hosted home/server stack for people who want private services on their own hardware without opening a broad public attack surface. It uses rootless Podman, Cloudflare Tunnel, LAN-only DNS, encrypted backups, and opt-in management/chat profiles.
 
 This is not a hosted SaaS product. It is installable self-hosted software: users run it on their own Ubuntu Server machine with `./install.sh`.
