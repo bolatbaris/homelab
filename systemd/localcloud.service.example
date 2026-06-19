@@ -1,0 +1,17 @@
+[Unit]
+Description=LocalCloud Stack
+After=network-online.target podman.socket
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/localcloud-stack
+ExecStart=/usr/bin/podman-compose -f /opt/localcloud-stack/docker-compose.yml up -d
+ExecStop=/usr/bin/podman-compose -f /opt/localcloud-stack/docker-compose.yml down
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

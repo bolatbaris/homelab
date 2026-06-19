@@ -2,28 +2,28 @@ version: "3.8"
 
 services:
   cloudflared:
-    image: docker.io/cloudflare/cloudflared:latest
+    image: ${CLOUDFLARED_IMAGE:-docker.io/cloudflare/cloudflared:latest}
     container_name: cloudflared
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token $TUNNEL_TOKEN
-    env_file:
-      - .env
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
     networks:
-      - homelab-net
+      - edge-net
 
   portainer:
-    image: docker.io/portainer/portainer-ce:latest
+    image: ${PORTAINER_IMAGE:-docker.io/portainer/portainer-ce:latest}
     container_name: portainer
+    profiles:
+      - mgmt
     restart: unless-stopped
     command: -H unix:///var/run/docker.sock
     volumes:
       - ${PODMAN_SOCKET_PATH}:/var/run/docker.sock
       - ./data/portainer:/data
     networks:
-      - homelab-net
+      - mgmt-net
 
   glances:
-    image: docker.io/nicolargo/glances:latest
+    image: ${GLANCES_IMAGE:-docker.io/nicolargo/glances:latest}
     container_name: glances
     restart: unless-stopped
     environment:
@@ -33,57 +33,83 @@ services:
       - /run/udev:/run/udev:ro
       - ./data/monitor:/glances/conf:ro
     networks:
-      - homelab-net
+      - edge-net
 
   gitea:
-    image: docker.io/gitea/gitea:latest
+    image: ${GITEA_IMAGE:-docker.io/gitea/gitea:latest}
     container_name: gitea
     restart: unless-stopped
     environment:
       - GITEA__database__DB_TYPE=sqlite3
-      - GITEA__server__SSH_PORT=2222
+      - GITEA__server__ROOT_URL=https://${GITEA_SUBDOMAIN}.${BASE_DOMAIN}/
+      - GITEA__server__SSH_PORT=${GITEA_SSH_PORT:-2222}
       - GITEA__server__SSH_DOMAIN=${BASE_DOMAIN}
+      - GITEA__security__INSTALL_LOCK=true
+      - GITEA__service__DISABLE_REGISTRATION=true
+      - GITEA__service__REQUIRE_SIGNIN_VIEW=true
     volumes:
       - ./data/gitea:/data
     ports:
-      - "2222:22"
+      - "${LAN_IP:-192.168.1.10}:${GITEA_SSH_PORT:-2222}:22"
     networks:
-      - homelab-net
+      - edge-net
 
   n8n:
-    image: docker.io/n8nio/n8n:latest
+    image: ${N8N_IMAGE:-docker.io/n8nio/n8n:latest}
     container_name: n8n
     restart: unless-stopped
     environment:
       - WEBHOOK_URL=https://${N8N_SUBDOMAIN}.${BASE_DOMAIN}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_PUBLIC_API_DISABLED=true
+      - N8N_PUBLIC_API_SWAGGERUI_DISABLED=true
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
+      - N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES=true
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_SECURITY_POLICY_MANAGED_BY_ENV=true
+      - N8N_MFA_ENFORCED_ENABLED=true
+      - N8N_GIT_NODE_DISABLE_BARE_REPOS=true
+      - N8N_SSRF_PROTECTION_ENABLED=true
+      - N8N_SSRF_BLOCKED_IP_RANGES=default
+      - N8N_COMMUNITY_PACKAGES_ENABLED=false
+      - N8N_UNVERIFIED_PACKAGES_ENABLED=false
+      - NODES_EXCLUDE=["n8n-nodes-base.executeCommand","n8n-nodes-base.localFileTrigger","n8n-nodes-base.readWriteFile"]
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=none
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=none
+      - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=false
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+      - EXECUTIONS_DATA_PRUNE_MAX_COUNT=1000
     volumes:
       - ./data/n8n:/home/node/.n8n
     networks:
-      - homelab-net
+      - edge-net
 
   adguard:
-    image: docker.io/adguard/adguardhome:latest
+    image: ${ADGUARD_IMAGE:-docker.io/adguard/adguardhome:latest}
     container_name: adguard
     restart: unless-stopped
     ports:
-      - "192.168.1.10:53:53/tcp"
-      - "192.168.1.10:53:53/udp"
-      - "3001:80"
+      - "${LAN_IP:-192.168.1.10}:53:53/tcp"
+      - "${LAN_IP:-192.168.1.10}:53:53/udp"
+      - "${LAN_IP:-192.168.1.10}:${ADGUARD_WEB_PORT:-3001}:80"
     volumes:
       - ./data/adguard/conf:/opt/adguardhome/conf
       - ./data/adguard/work:/opt/adguardhome/work
     networks:
-      - homelab-net
+      - dns-net
 
   mattermost:
     image: docker.io/mattermost/mattermost-team-edition:release-10.5
     container_name: mattermost
+    profiles:
+      - chat
     restart: unless-stopped
     depends_on:
       mattermost-postgres:
         condition: service_healthy
     environment:
-      - TZ=Europe/Istanbul
+      - TZ=${TZ:-UTC}
       - MM_SQLSETTINGS_DRIVERNAME=postgres
       - MM_SQLSETTINGS_DATASOURCE=postgres://mmuser:${MATTERMOST_DB_PASSWORD}@mattermost-postgres:5432/mattermost?sslmode=disable&connect_timeout=10
       - MM_SERVICESETTINGS_SITEURL=https://${MATTERMOST_SUBDOMAIN}.${BASE_DOMAIN}
@@ -99,12 +125,15 @@ services:
       - ./data/mattermost/client-plugins:/mattermost/client/plugins:rw
       - ./data/mattermost/bleve-indexes:/mattermost/bleve-indexes:rw
     networks:
-      - homelab-net
-    # NO ports: in base — tunnel reaches it internally as http://mattermost:8065
+      - edge-net
+      - db-net
+    # NO ports: in base - tunnel reaches it internally as http://mattermost:8065
 
   mattermost-postgres:
     image: docker.io/postgres:15-alpine
     container_name: mattermost-postgres
+    profiles:
+      - chat
     restart: unless-stopped
     environment:
       - POSTGRES_USER=mmuser
@@ -118,15 +147,22 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - homelab-net
-    # NO ports: ever — database is internal-only, never exposed
+      - db-net
+    # NO ports: ever - database is internal-only, never exposed
 
   backup:
     build: ./backup
     container_name: backup
     restart: unless-stopped
     environment:
+      - TZ=${TZ:-UTC}
       - BACKUP_REQUIRE_MOUNT=${BACKUP_REQUIRE_MOUNT:-false}
+      - RESTIC_REPOSITORY=${RESTIC_REPOSITORY:-/backup/restic-repo}
+      - RESTIC_PASSWORD=${RESTIC_PASSWORD}
+      - RESTIC_HOST=${RESTIC_HOST:-localcloud}
+      - RESTIC_KEEP_DAILY=${RESTIC_KEEP_DAILY:-14}
+      - RESTIC_KEEP_WEEKLY=${RESTIC_KEEP_WEEKLY:-8}
+      - RESTIC_KEEP_MONTHLY=${RESTIC_KEEP_MONTHLY:-6}
     volumes:
       - ${BACKUP_DEST_PATH}:/backup
       - ./data/portainer:/sources/portainer:ro
@@ -137,7 +173,15 @@ services:
       - ./data/mattermost:/sources/mattermost:ro
       # Mount future service data volumes read-only under /sources/<service>
       # e.g. - ./data/<service>:/sources/<service>:ro
+    network_mode: none
 
 networks:
-  homelab-net:
+  edge-net:
+    driver: bridge
+  mgmt-net:
+    driver: bridge
+  db-net:
+    driver: bridge
+    internal: true
+  dns-net:
     driver: bridge

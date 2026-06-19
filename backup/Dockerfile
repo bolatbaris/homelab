@@ -1,8 +1,8 @@
 FROM alpine:latest
 
-RUN apk add --no-cache rsync tzdata
+RUN apk add --no-cache restic tzdata
 
-ENV TZ=Europe/Istanbul
+ENV TZ=UTC
 
 COPY crontab /etc/crontabs/root
 COPY backup.sh /usr/local/bin/backup.sh

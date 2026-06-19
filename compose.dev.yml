@@ -1,0 +1,28 @@
+# Explicit dev-only ports. This file is never auto-loaded by Compose; use:
+#   podman-compose -f docker-compose.yml -f compose.dev.yml up -d
+services:
+  portainer:
+    ports:
+      - "127.0.0.1:9000:9000"
+
+  glances:
+    ports:
+      - "127.0.0.1:61208:61208"
+
+  gitea:
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  n8n:
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      - N8N_SECURE_COOKIE=false
+
+  mattermost:
+    ports:
+      - "127.0.0.1:8065:8065"
+    environment:
+      # Dev login over plain http://localhost needs SiteURL to match the access
+      # URL. Prod keeps the https value from docker-compose.yml / .env.
+      - MM_SERVICESETTINGS_SITEURL=http://localhost:8065
