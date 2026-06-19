@@ -2,13 +2,18 @@
 set -euo pipefail
 
 echo "==> [1/8] Creating data directories..."
-mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf}
+mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
+         ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres}
 
-echo "==> [2/8] Fixing n8n data dir ownership for rootless Podman uid mapping..."
-# n8n image runs as uid 1000 (node); host-created dir is owned by the host
-# user's mapped uid, not 1000 inside the user namespace. Without this,
-# n8n hits EACCES on ./data/n8n and crash-loops on first boot.
+echo "==> [2/8] Fixing data dir ownership for rootless Podman uid mapping (n8n=1000, mattermost=2000)..."
+# n8n image runs as uid 1000 (node); mattermost as uid 2000. A host-created
+# dir is owned by the host user's mapped uid, not the in-container uid —
+# without this the apps hit EACCES on their data dirs and crash-loop on first
+# boot. Postgres is excluded: its own entrypoint self-chowns PGDATA.
 podman unshare chown -R 1000:1000 ./data/n8n
+podman unshare chown -R 2000:2000 \
+  ./data/mattermost/config ./data/mattermost/data ./data/mattermost/logs \
+  ./data/mattermost/plugins ./data/mattermost/client-plugins ./data/mattermost/bleve-indexes
 
 echo "==> [3/8] Disabling systemd-resolved stub listener (frees port 53 for AdGuard)..."
 sudo mkdir -p /etc/systemd/resolved.conf.d

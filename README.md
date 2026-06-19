@@ -15,6 +15,8 @@ Production deploy checklist: [deployment.md](deployment.md).
 | glances | `nicolargo/glances` | `MONITOR_SUBDOMAIN` | `https://monitor.localcloud.example` | `61208` | `./data/monitor` |
 | gitea | `gitea/gitea` | `GITEA_SUBDOMAIN` | `https://git.localcloud.example` (HTTP) / `git@localcloud.example:2222` (SSH) | `3000` | `./data/gitea` |
 | n8n | `n8nio/n8n` | `N8N_SUBDOMAIN` | `https://n8n.localcloud.example` | `5678` | `./data/n8n` |
+| mattermost | `mattermost/mattermost-team-edition` | `MATTERMOST_SUBDOMAIN` | `https://mattermost.localcloud.example` | `8065` | `./data/mattermost` |
+| mattermost-postgres | `postgres:15-alpine` | — (internal-only, no tunnel) | — | — | `./data/mattermost/postgres` |
 | backup | (built from `./backup`) | — | — | — | writes to `BACKUP_DEST_PATH` |
 
 All services share the `homelab-net` bridge network. Dev ports come from `docker-compose.override.yml` (auto-merged); production deletes/renames that file to stay zero-ports (see [deployment.md](deployment.md)).
@@ -42,6 +44,7 @@ podman-compose up -d
 - Glances: http://localhost:61208
 - Gitea: http://localhost:3000
 - n8n: http://localhost:5678
+- Mattermost: http://localhost:8065
 - AdGuard: http://localhost:3001
 
 Note: temperature sensors will show empty/N/A in the macOS podman VM — expected, see [architecture.md](architecture.md) Phase 4.
@@ -64,6 +67,8 @@ Production (Linux) auto-starts the full stack on every boot/power recovery via a
 | `MONITOR_SUBDOMAIN` | `monitor` | same |
 | `GITEA_SUBDOMAIN` | `git` | same |
 | `N8N_SUBDOMAIN` | `n8n` | same |
+| `MATTERMOST_SUBDOMAIN` | `mattermost` | same |
+| `MATTERMOST_DB_PASSWORD` | long random hex (gitignored, `openssl rand -hex 32`) | same |
 | `PODMAN_SOCKET_PATH` | mac podman-machine socket (see `.env.example` comment) | `/run/user/1000/podman/podman.sock` |
 
 ## Backup & Restore

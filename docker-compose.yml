@@ -75,6 +75,52 @@ services:
     networks:
       - homelab-net
 
+  mattermost:
+    image: docker.io/mattermost/mattermost-team-edition:release-10.5
+    container_name: mattermost
+    restart: unless-stopped
+    depends_on:
+      mattermost-postgres:
+        condition: service_healthy
+    environment:
+      - TZ=Europe/Istanbul
+      - MM_SQLSETTINGS_DRIVERNAME=postgres
+      - MM_SQLSETTINGS_DATASOURCE=postgres://mmuser:${MATTERMOST_DB_PASSWORD}@mattermost-postgres:5432/mattermost?sslmode=disable&connect_timeout=10
+      - MM_SERVICESETTINGS_SITEURL=https://${MATTERMOST_SUBDOMAIN}.${BASE_DOMAIN}
+      - MM_BLEVESETTINGS_INDEXDIR=/mattermost/bleve-indexes
+      # --- security hardening ---
+      - MM_TEAMSETTINGS_ENABLEOPENSERVER=false
+      - MM_SERVICESETTINGS_ENABLEMULTIFACTORAUTHENTICATION=true
+    volumes:
+      - ./data/mattermost/config:/mattermost/config:rw
+      - ./data/mattermost/data:/mattermost/data:rw
+      - ./data/mattermost/logs:/mattermost/logs:rw
+      - ./data/mattermost/plugins:/mattermost/plugins:rw
+      - ./data/mattermost/client-plugins:/mattermost/client/plugins:rw
+      - ./data/mattermost/bleve-indexes:/mattermost/bleve-indexes:rw
+    networks:
+      - homelab-net
+    # NO ports: in base — tunnel reaches it internally as http://mattermost:8065
+
+  mattermost-postgres:
+    image: docker.io/postgres:15-alpine
+    container_name: mattermost-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=mmuser
+      - POSTGRES_PASSWORD=${MATTERMOST_DB_PASSWORD}
+      - POSTGRES_DB=mattermost
+    volumes:
+      - ./data/mattermost/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - homelab-net
+    # NO ports: ever — database is internal-only, never exposed
+
   backup:
     build: ./backup
     container_name: backup
@@ -88,6 +134,7 @@ services:
       - ./data/gitea:/sources/gitea:ro
       - ./data/n8n:/sources/n8n:ro
       - ./data/adguard:/sources/adguard:ro
+      - ./data/mattermost:/sources/mattermost:ro
       # Mount future service data volumes read-only under /sources/<service>
       # e.g. - ./data/<service>:/sources/<service>:ro
 

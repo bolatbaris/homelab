@@ -793,3 +793,82 @@ The `:-false` default means dev works out of the box with no `.env` change; prod
 - `architecture.md` — append this Phase 10 section; Phase 9 stays as-is (basic fstab rationale), Phase 10 supersedes its fstab recipe with the `ext4`/`x-systemd.automount` version and adds the mount-guard/`BACKUP_REQUIRE_MOUNT` layer on top
 
 Status: ✅ implemented, committed.
+
+---
+
+## Phase 11: Mattermost (Self-Hosted Team Chat)
+
+### Goal
+Self-hosted Slack alternative reachable from anywhere — phone/desktop/web clients — at `https://mattermost.localcloud.example` through the existing Cloudflare Tunnel. No new inbound ports; same public-exposure model as Portainer/Gitea/n8n.
+
+### Why a Second Container (PostgreSQL) — Deliberate Break From the SQLite Pattern
+Phases 5 (Gitea) and 6 (n8n) deliberately chose SQLite to avoid a database sidecar on the 2013 hardware. **Mattermost cannot follow that pattern**: it requires PostgreSQL (v11+) and has removed SQLite/MySQL support entirely. There is no single-container option suitable for persistent use (`mattermost-preview` bundles Postgres but is explicitly not for real data). So this phase adds two containers:
+- `mattermost` — the Go application server (web UI, REST API, and WebSocket, all on port `8065`).
+- `mattermost-postgres` — a dedicated PostgreSQL 15 instance, used only by Mattermost.
+
+This is the heaviest single addition to the stack (~+300–500 MB RAM combined). Flagged as a known, necessary cost; Postgres can be memory-tuned later (`shared_buffers`, `max_connections`) if the 2013 box is tight.
+
+### Service Config (base `docker-compose.yml`)
+- `mattermost`: `image: mattermost/mattermost-team-edition:release-10.5` (pinned, see "Version Pinning"), `restart: unless-stopped`, `homelab-net`, **no `ports:`** (tunnel reaches it as `http://mattermost:8065`).
+- `mattermost-postgres`: `image: postgres:15-alpine` (pinned), `restart: unless-stopped`, `homelab-net`, **no `ports:`** (internal-only), with a `pg_isready` healthcheck.
+- `mattermost` waits on the DB via `depends_on: { mattermost-postgres: { condition: service_healthy } }`. Mattermost also retries its DB connection on startup, so ordering is doubly safe.
+
+Key env on `mattermost`:
+- `MM_SQLSETTINGS_DRIVERNAME=postgres`
+- `MM_SQLSETTINGS_DATASOURCE=postgres://mmuser:${MATTERMOST_DB_PASSWORD}@mattermost-postgres:5432/mattermost?sslmode=disable&connect_timeout=10` — connects over the internal bridge network by container name; `sslmode=disable` is safe because the traffic never leaves `homelab-net`.
+- `MM_SERVICESETTINGS_SITEURL=https://${MATTERMOST_SUBDOMAIN}.${BASE_DOMAIN}` — required: Mattermost bakes this into permalinks, OAuth/CSRF, secure-cookie issuance, and the WebSocket origin check. (Dev overrides it to `http://localhost:8065`, see "Ports Summary".)
+- `MM_BLEVESETTINGS_INDEXDIR=/mattermost/bleve-indexes` — Bleve full-text search index (file-based, no external service).
+
+### Security (Public-Facing Service)
+This service is intentionally reachable from the public internet, so the controls matter:
+1. **No new inbound ports.** The tunnel is outbound-only; neither container maps a host port in the base file. No router/firewall change.
+2. **Database never exposed.** `mattermost-postgres` has no host port and no tunnel Public Hostname — only `mattermost` reaches it, over `homelab-net`.
+3. **Open registration disabled** — `MM_TEAMSETTINGS_ENABLEOPENSERVER=false`. The first account created becomes system admin; afterwards no stranger who finds the URL can self-register. This is the single most important control for a public chat endpoint.
+4. **Secret hygiene** — `MATTERMOST_DB_PASSWORD` lives only in the gitignored `.env`. Generate with `openssl rand -hex 32` (hex avoids the URL-reserved characters that base64 would put into the `postgres://…` DSN and break it).
+5. **MFA available** — `MM_SERVICESETTINGS_ENABLEMULTIFACTORAUTHENTICATION=true`; admin can enforce TOTP org-wide from the System Console.
+6. **TLS + WAF at the edge** — Cloudflare terminates TLS and fronts the service with its DDoS/WAF tier; `SiteURL=https` makes Mattermost issue Secure cookies accordingly.
+7. **Optional**: Cloudflare Access (email OTP) could gate the web path, but it breaks native mobile/desktop client login (those clients can't complete the Access challenge) — so the design relies on Mattermost's own auth + disabled signup + MFA instead.
+
+### Domain Routing
+New `.env` var, same single-source-of-truth pattern as Phases 3–6:
+```
+MATTERMOST_SUBDOMAIN=mattermost
+```
+Manual Cloudflare Zero Trust step (not compose): add a Public Hostname — subdomain `mattermost`, domain `localcloud.example`, Service `HTTP`, URL `mattermost:8065`. WebSockets traverse the tunnel automatically; no special config. No hostname for the Postgres container.
+
+### Data Layout, Ownership & Backup
+All persistent state lives under a single parent so backup stays a one-liner:
+```
+./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres}
+```
+- The Mattermost image runs as **uid 2000** and cannot chown its own bind mounts (same first-boot `EACCES` class as n8n's uid 1000, Phase 6). `run.sh` pre-chowns the app subdirs to `2000:2000`.
+- The `postgres` subdir is **not** pre-chowned — the Postgres image entrypoint starts as root and self-chowns `PGDATA` (works under rootless Podman's userns remap).
+- **Backup**: one line added to the `backup` service — `./data/mattermost:/sources/mattermost:ro` — and the generic `/sources/*` rsync loop (Phase 2) picks up app **and** database with no `backup.sh` change.
+- **Caveat**: rsync of a *live* Postgres data dir is not guaranteed crash-consistent. On restore, Postgres replays its WAL and normally recovers — acceptable for a homelab. The robust hardening (documented as a future step, not implemented here) is a nightly `pg_dump` into the data dir before the rsync window.
+
+### Ports Summary
+- Base `docker-compose.yml`: **no** host ports for either container (HTTP via tunnel; DB internal-only). Unlike Gitea/AdGuard, Mattermost introduces **no** base-file port exception.
+- `docker-compose.override.yml` (recreated this phase — the file was referenced by the docs but missing from disk): maps `8065:8065` for local dev and overrides `MM_SERVICESETTINGS_SITEURL=http://localhost:8065` so dev login works over plain HTTP (the prod `https` SiteURL would issue a Secure cookie that a plain-HTTP localhost session can't return, breaking login). Other services' dev ports remain absent — out of scope here.
+
+### Version Pinning (Deliberate Deviation)
+Every other service uses `:latest`; Mattermost and its Postgres are **pinned** on purpose:
+- Mattermost runs **DB schema migrations on startup** and does not support downgrades — an unpinned `latest` could irreversibly migrate the schema on a pull. Pinning makes upgrades deliberate and restore-reversible.
+- Postgres **major** upgrades require dump/restore — pinning the major version avoids a silent break.
+
+Upgrade path: bump the tag, pull, `up -d`; for Postgres majors, dump/restore per Postgres docs.
+
+### Docker ↔ Podman Compatibility Notes
+1. `depends_on … condition: service_healthy` — supported by podman-compose ≥1.0.6 / docker-compose. On an older podman-compose that rejects it, simplify to short-form `depends_on: [mattermost-postgres]`; Mattermost's own startup DB-retry covers ordering regardless.
+2. Postgres entrypoint self-chown of `PGDATA` works under rootless Podman's user-namespace remap (the in-container root maps to the running user's uid). No pre-chown needed for the `postgres` subdir.
+3. Bind mounts — same SELinux `:Z` open item as every prior phase; verify on first Debian prod deploy.
+4. WebSockets through cloudflared — supported natively; no config beyond the HTTP Public Hostname.
+
+### Files to Change (pending approval)
+- `docker-compose.yml` — add `mattermost` + `mattermost-postgres`; add `./data/mattermost:/sources/mattermost:ro` to `backup`.
+- `docker-compose.override.yml` — **create** (was missing); dev port + dev SiteURL for `mattermost`.
+- `.env.example` — add `MATTERMOST_SUBDOMAIN`, `MATTERMOST_DB_PASSWORD`.
+- `run.sh` — pre-create `./data/mattermost/*`; `podman unshare chown -R 2000:2000` the app subdirs.
+- `deployment.md` — Phase 11 section (DB password, Cloudflare hostname, first-run admin/locked-signup, ownership); verify-checklist + container-count updates.
+- `README.md` — services-table rows, `.env` vars, dev URL.
+
+Status: ✅ implemented (not yet committed — awaiting your review).

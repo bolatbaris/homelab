@@ -37,6 +37,7 @@ Edit:
   PODMAN_SOCKET_PATH=/run/user/1000/podman/podman.sock
   ```
 - `BASE_DOMAIN` / `*_SUBDOMAIN` vars — leave as-is unless domains changed
+- `MATTERMOST_DB_PASSWORD=` → set a long random value (`openssl rand -hex 32`); used by the Mattermost app + its internal-only PostgreSQL container
 
 ---
 
@@ -104,13 +105,14 @@ This single step consolidates everything that used to be manual: pre-creates `./
 
 ## 8. Verify
 - `systemctl --user status podman.socket` and `homelab.service` — both active/enabled
-- `podman-compose ps` — all 7 containers `Up`
+- `podman-compose ps` — all 9 containers `Up` (includes `mattermost` + `mattermost-postgres`)
 - Cloudflare Zero Trust dashboard → tunnel shows "Healthy"
-- Visit `https://portainer.localcloud.example`, `https://monitor.localcloud.example`, `https://git.localcloud.example`, `https://n8n.localcloud.example` — all reachable
+- Visit `https://portainer.localcloud.example`, `https://monitor.localcloud.example`, `https://git.localcloud.example`, `https://n8n.localcloud.example`, `https://mattermost.localcloud.example` — all reachable
 - `sensors` output matches what Glances shows in its temperature panel
 - `git@localcloud.example:2222` SSH clone works (after DNS A record + router forward `2222→2222`, per architecture.md Phase 5)
 - `dig @192.168.1.10 example.com` (or `dig @127.0.0.1 example.com` on the host itself) — should return a valid A record, confirming AdGuard is serving DNS
 - Visit `http://192.168.1.10:3001` — AdGuard web UI reachable on LAN
+- `podman port mattermost-postgres` returns nothing — confirms the database has no host port (internal-only, as intended)
 
 ---
 
@@ -177,6 +179,31 @@ After this, step 6's `mount | grep usb-disk` check should pass permanently acros
 - **`BACKUP_REQUIRE_MOUNT=false`** (dev default) — guard skipped, since `./mock-usb` is intentionally a plain directory, not a mountpoint.
 
 `run.sh` step 7 also runs a non-fatal `mountpoint -q /mnt/usb-disk` check on every bring-up and prints a warning if the USB isn't mounted — the rest of the stack still starts either way.
+
+---
+
+## Phase 11: Mattermost (Self-Hosted Team Chat)
+
+Mattermost adds **two** containers — the `mattermost` app server and a dedicated `mattermost-postgres` database (Mattermost requires PostgreSQL; it has no SQLite mode). Both run on `homelab-net` with **no host ports**; only the app is published, via the Cloudflare Tunnel.
+
+### 1. Set the database password in `.env`
+```sh
+openssl rand -hex 32   # copy the output into MATTERMOST_DB_PASSWORD in .env
+```
+Use **hex**, not base64 — base64's `+` `/` `=` characters would break the `postgres://…` connection string. The same value is used by both the `mattermost` and `mattermost-postgres` containers. The database is internal-only — no host port, no tunnel hostname — so it is never reachable from the internet.
+
+### 2. Add the Cloudflare Public Hostname (same pattern as Portainer/Gitea/n8n)
+Zero Trust → Networks → Tunnels → (existing tunnel) → Public Hostname → Add:
+- Subdomain `mattermost`, Domain `localcloud.example`
+- Service **HTTP**, URL `mattermost:8065`
+
+WebSockets (real-time messaging) pass through the tunnel automatically — no extra config. Do **not** add a hostname for `mattermost-postgres`.
+
+### 3. First run — create the admin, signup stays locked
+On first bring-up, visit `https://mattermost.localcloud.example`. The **first account you create becomes the system administrator.** Because `MM_TEAMSETTINGS_ENABLEOPENSERVER=false` is baked into the compose file, no one else who reaches the public URL can self-register — invite users from the System Console instead. Turn on MFA for admin accounts (System Console → Authentication → MFA).
+
+### 4. Ownership note (rootless Podman)
+`run.sh` pre-chowns the Mattermost app data dirs to uid 2000 (the image's runtime user). The `postgres` data dir is left alone — the Postgres image self-chowns it on first init. No manual action needed beyond `run.sh`.
 
 ---
 
