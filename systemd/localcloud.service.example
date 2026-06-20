@@ -1,3 +1,8 @@
+# Reference only. install.sh generates the real unit at
+# ~/.config/systemd/user/localcloud.service for the actual checkout path and any
+# enabled LOCALCLOUD_PROFILES. Use this file only for a manual or system-level
+# setup, and edit the paths below to match your install.
+
 [Unit]
 Description=LocalCloud Stack
 After=network-online.target podman.socket

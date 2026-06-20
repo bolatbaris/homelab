@@ -26,5 +26,8 @@ jobs:
           docker compose -f docker-compose.yml config >/dev/null
           docker compose -f docker-compose.yml -f compose.dev.yml config >/dev/null
 
-      - name: Whitespace and conflict markers
-        run: git diff --check HEAD
+      - name: Conflict markers
+        run: |
+          if git grep -nE '^(<<<<<<<|>>>>>>>)' -- .; then
+            echo "merge conflict markers found"; exit 1
+          fi

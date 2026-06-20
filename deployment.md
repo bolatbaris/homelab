@@ -12,7 +12,7 @@ sudo apt install -y podman podman-compose git curl lm-sensors restic cryptsetup 
 ## 2. Clone And Prepare
 
 ```sh
-git clone <repo-url> localcloud-stack
+git clone https://github.com/bolatbaris/homelab.git localcloud-stack
 cd localcloud-stack
 ./install.sh
 ```
@@ -34,7 +34,7 @@ Required production values:
 - `RESTIC_PASSWORD=<openssl rand -base64 48>`
 - `N8N_ENCRYPTION_KEY=<openssl rand -hex 32>`
 
-Set `PODMAN_SOCKET_PATH=/run/user/1000/podman/podman.sock` only if you plan to enable the optional Portainer management profile.
+Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` only for `chat`.
 
 ## 3. Static LAN IP
 
@@ -79,6 +79,8 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
+The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. Drop the rules for services you do not run.
+
 ## 5. Encrypted Backup Disk
 
 Use LUKS plus ext4. The following is destructive if pointed at the wrong disk.
@@ -99,6 +101,8 @@ Verify:
 mountpoint -q /mnt/usb-disk
 df -h /mnt/usb-disk
 ```
+
+`install.sh` writes a `.localcloud-backup-volume` marker onto the mounted disk; the backup container checks for it and aborts (instead of writing to the host filesystem) if the disk is ever not mounted.
 
 ## 6. Cloudflare
 
@@ -137,8 +141,6 @@ The installer:
 ```sh
 systemctl --user status localcloud.service
 podman-compose -f docker-compose.yml ps
-dig @"$LAN_IP" example.com
-curl -I "http://$LAN_IP:${ADGUARD_WEB_PORT:-3001}"
 ```
 
 Expected base services:
@@ -149,7 +151,12 @@ Expected base services:
 - n8n
 - backup
 
-Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` (`chat`). The `dig`/`curl` checks above apply only when the `dns` profile is enabled.
+Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` (`chat`). When the `dns` profile is enabled, also verify AdGuard:
+
+```sh
+dig @"$LAN_IP" example.com
+curl -I "http://$LAN_IP:${ADGUARD_WEB_PORT:-3001}"
+```
 
 ## 9. Optional Profiles
 
@@ -167,13 +174,25 @@ podman-compose -f docker-compose.yml --profile chat up -d mattermost-postgres ma
 
 ## 10. Restore
 
+The helper restores with the correct rootless-Podman ownership and keeps your current data aside:
+
 ```sh
-export RESTIC_PASSWORD='<saved password>'
-restic -r /mnt/usb-disk/restic-repo snapshots
-restic -r /mnt/usb-disk/restic-repo restore latest --target /tmp/localcloud-restore
-rsync -aAXH --numeric-ids /tmp/localcloud-restore/sources/<service>/ ~/localcloud-stack/data/<service>/
 cd ~/localcloud-stack
+./restore.sh            # latest snapshot
+./restore.sh <id>       # a specific snapshot from `restic snapshots`
+```
+
+Manual equivalent — note the `podman unshare`, required so restored files get the user-namespace ownership the containers expect (a plain non-root restore cannot set those owners):
+
+```sh
+cd ~/localcloud-stack
+export RESTIC_PASSWORD='<saved password>'
+export RESTIC_REPOSITORY=/mnt/usb-disk/restic-repo
+restic snapshots
+podman unshare restic restore latest --target ./.restore
+podman-compose -f docker-compose.yml down
+podman unshare mv ./.restore/sources/<service> ./data/<service>
 podman-compose -f docker-compose.yml up -d
 ```
 
-Use the same `N8N_ENCRYPTION_KEY` as the original deployment.
+Restore requires the **same** `.env` secrets as the original deployment — especially `RESTIC_PASSWORD` (to open the repo) and `N8N_ENCRYPTION_KEY` / `MATTERMOST_DB_PASSWORD` (to decrypt restored credentials).

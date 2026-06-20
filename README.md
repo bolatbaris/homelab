@@ -4,6 +4,12 @@
   <img src="logo.png" alt="LocalCloud Stack logo" width="180">
 </p>
 
+<p align="center">
+  <img src="https://github.com/bolatbaris/homelab/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
+  <img src="https://img.shields.io/badge/platform-Ubuntu%20Server-orange.svg" alt="Ubuntu Server">
+</p>
+
 LocalCloud Stack is a self-hosted home/server stack for people who want private services on their own hardware without opening a broad public attack surface. It uses rootless Podman, Cloudflare Tunnel, LAN-only DNS, encrypted backups, and opt-in management/chat profiles.
 
 This is not a hosted SaaS product. It is installable self-hosted software: users run it on their own Ubuntu Server machine with `./install.sh`.
@@ -37,7 +43,7 @@ Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-sepa
 ## Install
 
 ```sh
-git clone <repo-url> localcloud-stack
+git clone https://github.com/bolatbaris/homelab.git localcloud-stack
 cd localcloud-stack
 ./install.sh
 ```
@@ -57,7 +63,7 @@ Minimum required `.env` values:
 - `RESTIC_PASSWORD`
 - `BACKUP_DEST_PATH`
 
-`PODMAN_SOCKET_PATH` is required only when enabling the optional `mgmt` profile for Portainer.
+Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` only for the `chat` profile.
 
 Generate secrets:
 
@@ -97,26 +103,28 @@ podman-compose -f docker-compose.yml -f compose.dev.yml --profile chat up -d
 
 See [SECURITY.md](SECURITY.md) for the deployment baseline.
 
-## Backups
+## Backups And Restore
 
 The backup container runs nightly at `03:00` in the configured `TZ`, initializes an encrypted restic repository under `${BACKUP_DEST_PATH}/restic-repo`, and keeps daily, weekly, and monthly snapshots according to `.env`.
 
-Restore outline:
+Keep `RESTIC_PASSWORD` and `N8N_ENCRYPTION_KEY` **off** the backup disk (for example in a password manager). Without them a restored backup cannot be decrypted.
+
+Restore the latest snapshot and bring the stack back up:
 
 ```sh
-export RESTIC_PASSWORD='<saved password>'
-restic -r /mnt/usb-disk/restic-repo snapshots
-restic -r /mnt/usb-disk/restic-repo restore latest --target /tmp/localcloud-restore
-rsync -aAXH --numeric-ids /tmp/localcloud-restore/sources/<service>/ ./data/<service>/
-podman-compose -f docker-compose.yml up -d
+./restore.sh            # latest snapshot
+./restore.sh <id>       # a specific snapshot from `restic snapshots`
 ```
+
+`restore.sh` restores through Podman's user namespace so file ownership matches what the rootless containers expect, and moves your current `./data/<svc>` aside (`*.pre-restore-*`) instead of deleting it. See [deployment.md](deployment.md) for the full disaster-recovery walkthrough.
 
 ## Documentation
 
 - [Deployment Runbook](deployment.md)
 - [Architecture](architecture.md)
 - [Security Baseline](SECURITY.md)
-- [Security And Watts Difference Report](security-watts-difference-report.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
