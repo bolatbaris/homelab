@@ -13,16 +13,16 @@ This is not a hosted SaaS product. It is installable self-hosted software: users
 | Service | Purpose | Default Exposure |
 |---|---|---|
 | cloudflared | Cloudflare Tunnel gateway | outbound-only |
-| AdGuard Home | LAN DNS and ad blocking | `${LAN_IP}:53`, `${LAN_IP}:${ADGUARD_WEB_PORT}` |
 | Glances | lightweight host monitoring | Cloudflare Tunnel, protect with Access |
 | Gitea | self-hosted Git | Cloudflare Tunnel for HTTP, LAN-bound SSH |
 | n8n | workflow automation | Cloudflare Tunnel, protect UI with Access |
 | restic backup sidecar | encrypted, versioned backups | no network |
 
-Optional profiles:
+Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-separated, e.g. `LOCALCLOUD_PROFILES=dns,chat`):
 
 | Profile | Services | Default |
 |---|---|---|
+| `dns` | AdGuard Home — LAN DNS + ad-blocking. The installer reconfigures the host resolver (`/etc/resolv.conf`, systemd-resolved, port 53). | off |
 | `mgmt` | Portainer | off |
 | `chat` | Mattermost + Postgres | off |
 

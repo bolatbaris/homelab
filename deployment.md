@@ -123,13 +123,14 @@ Recommended Cloudflare Access policies:
 
 The installer:
 
-- validates `.env`
+- validates `.env` (including per-profile secrets)
 - creates private data directories
 - fixes rootless Podman UID mappings for n8n and Mattermost data
-- frees port 53 for AdGuard
+- reconfigures the host resolver for AdGuard only when the `dns` profile is enabled
+- creates the backup-volume marker when the backup disk is mounted
 - enables rootless `podman.socket`
-- creates a user systemd service for the current checkout path
-- starts the base stack
+- creates a user systemd service for the current checkout path (honoring `LOCALCLOUD_PROFILES`)
+- starts the stack with any enabled profiles
 
 ## 8. Verify
 
@@ -143,11 +144,12 @@ curl -I "http://$LAN_IP:${ADGUARD_WEB_PORT:-3001}"
 Expected base services:
 
 - cloudflared
-- adguard
 - glances
 - gitea
 - n8n
 - backup
+
+Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` (`chat`). The `dig`/`curl` checks above apply only when the `dns` profile is enabled.
 
 ## 9. Optional Profiles
 

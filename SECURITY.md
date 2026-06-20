@@ -67,4 +67,6 @@ Take a restic snapshot before updates.
 
 ## Responsible Disclosure
 
-If you publish a fork or hosted product based on this project, add your own vulnerability reporting address here.
+Report security vulnerabilities privately — do not open a public issue. Preferred: open a GitHub private security advisory ("Report a vulnerability" under the repository **Security** tab). Maintainers aim to acknowledge within a few days and to coordinate a fix and disclosure timeline with the reporter.
+
+If you run a fork or hosted product based on this project, replace this section with your own monitored security contact.

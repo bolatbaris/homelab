@@ -88,6 +88,8 @@ services:
   adguard:
     image: ${ADGUARD_IMAGE:-docker.io/adguard/adguardhome:latest}
     container_name: adguard
+    profiles:
+      - dns
     restart: unless-stopped
     ports:
       - "${LAN_IP:-192.168.1.10}:53:53/tcp"
@@ -100,7 +102,7 @@ services:
       - dns-net
 
   mattermost:
-    image: docker.io/mattermost/mattermost-team-edition:release-10.5
+    image: ${MATTERMOST_IMAGE:-docker.io/mattermost/mattermost-team-edition:release-10.5}
     container_name: mattermost
     profiles:
       - chat
@@ -130,7 +132,7 @@ services:
     # NO ports: in base - tunnel reaches it internally as http://mattermost:8065
 
   mattermost-postgres:
-    image: docker.io/postgres:15-alpine
+    image: ${POSTGRES_IMAGE:-docker.io/postgres:15-alpine}
     container_name: mattermost-postgres
     profiles:
       - chat

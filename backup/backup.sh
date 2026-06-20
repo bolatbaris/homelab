@@ -11,37 +11,51 @@ RESTIC_KEEP_MONTHLY="${RESTIC_KEEP_MONTHLY:-6}"
 
 export RESTIC_REPOSITORY RESTIC_PASSWORD
 
-# Safety: abort if /backup is not a real mount point.
-# Without this, a missing USB mount would silently rsync all data onto
-# the host's root filesystem instead of the USB drive.
-if [ "$BACKUP_REQUIRE_MOUNT" = "true" ] && ! mountpoint -q "$DEST_ROOT"; then
-  echo "[$(date)] ERROR: $DEST_ROOT is not a mount point. USB drive not mounted? Aborting backup to prevent filling host filesystem." >> /var/log/backup.log
+# Marker file that lives ON the backup volume (created once at install time).
+# We check for it instead of `mountpoint -q "$DEST_ROOT"` because the compose
+# bind-mount makes $DEST_ROOT *always* look like a mount point inside the
+# container -- even when the real disk is unmounted on the host, the empty
+# placeholder directory is bind-mounted instead, so `mountpoint` always
+# succeeds. The marker only exists on the real volume, so its absence reliably
+# means "not mounted -> abort instead of silently writing the backup onto the
+# host filesystem".
+MARKER="$DEST_ROOT/.localcloud-backup-volume"
+FALLBACK_LOG="/var/log/backup.log"
+
+abort() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] ERROR: $1" >> "$FALLBACK_LOG"
   exit 1
+}
+
+if [ "$BACKUP_REQUIRE_MOUNT" = "true" ] && [ ! -f "$MARKER" ]; then
+  abort "marker $MARKER missing -- backup volume not mounted? Aborting to avoid writing to the host filesystem."
 fi
 
 if [ -z "${RESTIC_PASSWORD:-}" ]; then
-  echo "[$(date)] ERROR: RESTIC_PASSWORD is not set. Aborting encrypted backup." >> /var/log/backup.log
-  exit 1
+  abort "RESTIC_PASSWORD is not set. Aborting encrypted backup."
 fi
 
 if [ ! -d "$SRC_ROOT" ]; then
-  echo "[$(date)] ERROR: $SRC_ROOT does not exist. Nothing to back up." >> /var/log/backup.log
-  exit 1
+  abort "$SRC_ROOT does not exist. Nothing to back up."
 fi
 
+# Persistent log on the backup volume so run history survives container
+# recreation (the guard above guarantees the volume is mounted by this point).
+LOG="$DEST_ROOT/backup.log"
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] $*" | tee -a "$LOG"; }
+
+log "Backup started."
+
 if [ ! -f "$RESTIC_REPOSITORY/config" ]; then
-  echo "[$(date)] Initializing encrypted restic repository at $RESTIC_REPOSITORY" >> /var/log/backup.log
+  log "Initializing encrypted restic repository at $RESTIC_REPOSITORY"
   restic init
 fi
 
-restic backup "$SRC_ROOT" \
-  --host "$RESTIC_HOST" \
-  --tag localcloud
-
-restic forget \
-  --host "$RESTIC_HOST" \
-  --tag localcloud \
+restic backup "$SRC_ROOT" --host "$RESTIC_HOST" --tag localcloud
+restic forget --host "$RESTIC_HOST" --tag localcloud \
   --keep-daily "$RESTIC_KEEP_DAILY" \
   --keep-weekly "$RESTIC_KEEP_WEEKLY" \
   --keep-monthly "$RESTIC_KEEP_MONTHLY" \
   --prune
+
+log "Backup finished OK."

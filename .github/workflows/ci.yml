@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          bash -n install.sh
+          bash -n run.sh
+          sh -n backup/backup.sh
+
+      - name: ShellCheck (advisory)
+        continue-on-error: true
+        run: shellcheck install.sh run.sh
+
+      - name: Validate Compose config
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker-compose.yml -f compose.dev.yml config >/dev/null
+
+      - name: Whitespace and conflict markers
+        run: git diff --check HEAD
