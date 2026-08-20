@@ -28,9 +28,9 @@ Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-sepa
 
 | Profile | Services | Default |
 |---|---|---|
-| `dns` | AdGuard Home — LAN DNS + ad-blocking. The installer reconfigures the host resolver (`/etc/resolv.conf`, systemd-resolved, port 53). | off |
+| `dns` | AdGuard Home - LAN DNS + ad-blocking. The installer reconfigures the host resolver (`/etc/resolv.conf`, systemd-resolved, port 53). | off |
 | `mgmt` | Portainer | off |
-| `chat` | Mattermost + Postgres | off |
+| `chat` | Mattermost + Postgres + logical chat-history dumps | off |
 
 ## Requirements
 
@@ -63,7 +63,7 @@ Minimum required `.env` values:
 - `RESTIC_PASSWORD`
 - `BACKUP_DEST_PATH`
 
-Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` only for the `chat` profile.
+Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). Valid values are `dns`, `mgmt`, and `chat`; invalid values fail the installer. `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` and `MATTERMOST_SUBDOMAIN` are required only for the `chat` profile.
 
 Generate secrets:
 
@@ -107,6 +107,10 @@ See [SECURITY.md](SECURITY.md) for the deployment baseline.
 
 The backup container runs nightly at `03:00` in the configured `TZ`, initializes an encrypted restic repository under `${BACKUP_DEST_PATH}/restic-repo`, and keeps daily, weekly, and monthly snapshots according to `.env`.
 
+When `BACKUP_REQUIRE_MOUNT=true`, `./install.sh` fails unless `${BACKUP_DEST_PATH}` is already mounted. The installer writes a marker file on the mounted backup disk, and scheduled backups abort if that marker is missing.
+
+When the `chat` profile is enabled, `mattermost-postgres-dump` writes a logical PostgreSQL dump to `./data/mattermost/db-dumps` at `02:45` by default, before the restic snapshot. That dump contains Mattermost message history in a restore-friendly format; restic also backs up the raw PostgreSQL data directory.
+
 Keep `RESTIC_PASSWORD` and `N8N_ENCRYPTION_KEY` **off** the backup disk (for example in a password manager). Without them a restored backup cannot be decrypted.
 
 Restore the latest snapshot and bring the stack back up:
@@ -116,7 +120,7 @@ Restore the latest snapshot and bring the stack back up:
 ./restore.sh <id>       # a specific snapshot from `restic snapshots`
 ```
 
-`restore.sh` restores through Podman's user namespace so file ownership matches what the rootless containers expect, and moves your current `./data/<svc>` aside (`*.pre-restore-*`) instead of deleting it. See [deployment.md](deployment.md) for the full disaster-recovery walkthrough.
+`restore.sh` restores through Podman's user namespace so file ownership matches what the rootless containers expect, uses the profiles configured in `.env`, and moves your current `./data/<svc>` aside (`*.pre-restore-*`) instead of deleting it. See [deployment.md](deployment.md) for the full disaster-recovery walkthrough.
 
 ## Documentation
 

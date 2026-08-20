@@ -34,7 +34,7 @@ Required production values:
 - `RESTIC_PASSWORD=<openssl rand -base64 48>`
 - `N8N_ENCRYPTION_KEY=<openssl rand -hex 32>`
 
-Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` only for `chat`.
+Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`.
 
 ## 3. Static LAN IP
 
@@ -102,7 +102,7 @@ mountpoint -q /mnt/usb-disk
 df -h /mnt/usb-disk
 ```
 
-`install.sh` writes a `.localcloud-backup-volume` marker onto the mounted disk; the backup container checks for it and aborts (instead of writing to the host filesystem) if the disk is ever not mounted.
+`install.sh` writes a `.localcloud-backup-volume` marker onto the mounted disk. With `BACKUP_REQUIRE_MOUNT=true`, the installer fails if the disk is not mounted, and the backup container aborts (instead of writing to the host filesystem) if the marker is ever missing.
 
 ## 6. Cloudflare
 
@@ -111,6 +111,7 @@ Create tunnel public hostnames:
 - `monitor.${BASE_DOMAIN}` -> `http://glances:61208`
 - `git.${BASE_DOMAIN}` -> `http://gitea:3000`
 - `n8n.${BASE_DOMAIN}` -> `http://n8n:5678`
+- `mattermost.${BASE_DOMAIN}` -> `http://mattermost:8065` when `LOCALCLOUD_PROFILES` includes `chat`
 
 Recommended Cloudflare Access policies:
 
@@ -134,7 +135,7 @@ The installer:
 - creates the backup-volume marker when the backup disk is mounted
 - enables rootless `podman.socket`
 - creates a user systemd service for the current checkout path (honoring `LOCALCLOUD_PROFILES`)
-- starts the stack with any enabled profiles
+- stops any old LocalCloud containers and starts the selected profile set through the user systemd service
 
 ## 8. Verify
 
@@ -151,11 +152,18 @@ Expected base services:
 - n8n
 - backup
 
-Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` (`chat`). When the `dns` profile is enabled, also verify AdGuard:
+Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`). When the `dns` profile is enabled, also verify AdGuard:
 
 ```sh
 dig @"$LAN_IP" example.com
 curl -I "http://$LAN_IP:${ADGUARD_WEB_PORT:-3001}"
+```
+
+When the `chat` profile is enabled, verify the logical chat-history dump sidecar:
+
+```sh
+podman-compose -f docker-compose.yml --profile chat ps mattermost-postgres-dump
+ls -lh ./data/mattermost/db-dumps/
 ```
 
 ## 9. Optional Profiles
@@ -169,7 +177,7 @@ podman-compose -f docker-compose.yml --profile mgmt up -d portainer
 Mattermost:
 
 ```sh
-podman-compose -f docker-compose.yml --profile chat up -d mattermost-postgres mattermost
+podman-compose -f docker-compose.yml --profile chat up -d mattermost-postgres mattermost-postgres-dump mattermost
 ```
 
 ## 10. Restore
@@ -182,17 +190,22 @@ cd ~/localcloud-stack
 ./restore.sh <id>       # a specific snapshot from `restic snapshots`
 ```
 
-Manual equivalent — note the `podman unshare`, required so restored files get the user-namespace ownership the containers expect (a plain non-root restore cannot set those owners):
+Manual equivalent - note the `podman unshare`, required so restored files get the user-namespace ownership the containers expect (a plain non-root restore cannot set those owners). Add the same `--profile ...` flags you enabled in `.env`:
 
 ```sh
 cd ~/localcloud-stack
 export RESTIC_PASSWORD='<saved password>'
 export RESTIC_REPOSITORY=/mnt/usb-disk/restic-repo
+PROFILE_ARGS='--profile dns --profile chat'  # adjust or leave empty
 restic snapshots
 podman unshare restic restore latest --target ./.restore
-podman-compose -f docker-compose.yml down
+podman-compose -f docker-compose.yml $PROFILE_ARGS down
 podman unshare mv ./.restore/sources/<service> ./data/<service>
-podman-compose -f docker-compose.yml up -d
+podman-compose -f docker-compose.yml $PROFILE_ARGS up -d
 ```
 
-Restore requires the **same** `.env` secrets as the original deployment — especially `RESTIC_PASSWORD` (to open the repo) and `N8N_ENCRYPTION_KEY` / `MATTERMOST_DB_PASSWORD` (to decrypt restored credentials).
+Restore requires the **same** `.env` secrets as the original deployment - especially `RESTIC_PASSWORD` (to open the repo) and `N8N_ENCRYPTION_KEY` / `MATTERMOST_DB_PASSWORD` (to decrypt restored credentials).
+
+The scheduled backup is file-level. For the strongest restore consistency before major upgrades, stop write-heavy services, run `podman exec backup /usr/local/bin/backup.sh`, then start the services again.
+
+Mattermost chat history lives in PostgreSQL. With the `chat` profile enabled, `mattermost-postgres-dump` creates `./data/mattermost/db-dumps/mattermost-latest.dump` before the default restic snapshot. If a raw PostgreSQL data restore ever fails, rebuild the Mattermost database from that dump with `pg_restore` against a clean `mattermost-postgres` container.

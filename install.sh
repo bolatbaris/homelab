@@ -11,10 +11,6 @@ info() {
   printf '==> %s\n' "$*"
 }
 
-warn() {
-  printf 'WARNING: %s\n' "$*" >&2
-}
-
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
@@ -31,6 +27,11 @@ env_value() {
   value="${value%%[[:space:]]#*}"
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value:1:${#value}-2}"
+  elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+    value="${value:1:${#value}-2}"
+  fi
   printf '%s' "$value"
 }
 
@@ -41,6 +42,28 @@ require_env_value() {
   if [ -z "$value" ] || printf '%s' "$value" | grep -Eq '^(change-me|your-|example-|localcloud\.example$)'; then
     fail ".env must set a real value for ${key}"
   fi
+}
+
+normalize_profiles() {
+  local raw="$1"
+  local normalized=""
+  local profile
+
+  for profile in $(printf '%s' "$raw" | tr ',' ' '); do
+    case "$profile" in
+      dns|mgmt|chat) ;;
+      *)
+        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat."
+        ;;
+    esac
+
+    case ",$normalized," in
+      *,"$profile",*) ;;
+      *) normalized="${normalized:+$normalized,}$profile" ;;
+    esac
+  done
+
+  printf '%s' "$normalized"
 }
 
 # True when LOCALCLOUD_PROFILES (comma-separated) contains the given profile.
@@ -76,7 +99,7 @@ Required minimum:
 Optional services via LOCALCLOUD_PROFILES (comma-separated):
   dns  -> AdGuard Home (the installer will reconfigure the host resolver)
   mgmt -> Portainer (requires PODMAN_SOCKET_PATH)
-  chat -> Mattermost + PostgreSQL (requires MATTERMOST_DB_PASSWORD)
+  chat -> Mattermost + PostgreSQL (requires MATTERMOST_DB_PASSWORD and MATTERMOST_SUBDOMAIN)
 MSG
   exit 0
 fi
@@ -96,25 +119,30 @@ do
   require_env_value "$key"
 done
 
-LAN_IP="$(env_value LAN_IP)"
 BACKUP_DEST_PATH="$(env_value BACKUP_DEST_PATH)"
 BACKUP_REQUIRE_MOUNT="$(env_value BACKUP_REQUIRE_MOUNT)"
-LOCALCLOUD_PROFILES="$(env_value LOCALCLOUD_PROFILES)"
+LOCALCLOUD_PROFILES="$(normalize_profiles "$(env_value LOCALCLOUD_PROFILES)")"
 PODMAN_COMPOSE_BIN="$(command -v podman-compose)"
 
 # Translate LOCALCLOUD_PROFILES (e.g. "dns,chat") into repeated --profile flags.
-PROFILE_ARGS=""
+PROFILE_ARGS_STRING=""
 for p in $(printf '%s' "$LOCALCLOUD_PROFILES" | tr ',' ' '); do
-  [ -n "$p" ] && PROFILE_ARGS="$PROFILE_ARGS --profile $p"
+  if [ -n "$p" ]; then
+    PROFILE_ARGS_STRING="$PROFILE_ARGS_STRING --profile $p"
+  fi
 done
+info "Enabled profiles: ${LOCALCLOUD_PROFILES:-none}"
 
 # Per-profile required configuration.
 if profile_enabled mgmt; then require_env_value PODMAN_SOCKET_PATH; fi
-if profile_enabled chat; then require_env_value MATTERMOST_DB_PASSWORD; fi
+if profile_enabled chat; then
+  require_env_value MATTERMOST_DB_PASSWORD
+  require_env_value MATTERMOST_SUBDOMAIN
+fi
 
 info "Creating private data directories"
 mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
-         ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres}
+         ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps}
 chmod -R go-rwx ./data
 
 info "Fixing rootless Podman bind-mount ownership"
@@ -149,8 +177,7 @@ if mountpoint -q "$BACKUP_DEST_PATH"; then
   touch "$BACKUP_DEST_PATH/.localcloud-backup-volume"
   info "Backup volume mounted; marker present at $BACKUP_DEST_PATH/.localcloud-backup-volume"
 elif [ "$BACKUP_REQUIRE_MOUNT" = "true" ]; then
-  warn "$BACKUP_DEST_PATH is not mounted. Mount it and create $BACKUP_DEST_PATH/.localcloud-backup-volume,"
-  warn "or scheduled backups will abort (by design) to avoid writing onto the host disk."
+  fail "$BACKUP_DEST_PATH is not mounted. Mount it before installing because BACKUP_REQUIRE_MOUNT=true."
 fi
 
 info "Enabling rootless Podman socket and user service"
@@ -166,9 +193,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=$REPO_DIR
-ExecStart=$PODMAN_COMPOSE_BIN -f $COMPOSE_FILE$PROFILE_ARGS up -d
-ExecStop=$PODMAN_COMPOSE_BIN -f $COMPOSE_FILE down
+WorkingDirectory="$REPO_DIR"
+ExecStart="$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE"$PROFILE_ARGS_STRING up -d
+ExecStop="$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE"$PROFILE_ARGS_STRING down
 Restart=on-failure
 RestartSec=10s
 TimeoutStartSec=120
@@ -177,11 +204,13 @@ TimeoutStartSec=120
 WantedBy=default.target
 EOF
 systemctl --user daemon-reload
-systemctl --user enable --now "$SERVICE_NAME"
+systemctl --user enable "$SERVICE_NAME"
 
-info "Starting stack"
-# shellcheck disable=SC2086
-"$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" $PROFILE_ARGS up -d
+info "Stopping any existing LocalCloud containers before applying selected profiles"
+"$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat down --remove-orphans || true
+
+info "Starting stack through systemd user service"
+systemctl --user restart "$SERVICE_NAME"
 
 info "Done"
-printf 'Check status with:\n  systemctl --user status %s\n  podman-compose -f docker-compose.yml ps\n' "$SERVICE_NAME"
+printf 'Check status with:\n  systemctl --user status %s\n  podman-compose -f docker-compose.yml%s ps\n' "$SERVICE_NAME" "$PROFILE_ARGS_STRING"

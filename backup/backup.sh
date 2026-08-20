@@ -51,7 +51,10 @@ if [ ! -f "$RESTIC_REPOSITORY/config" ]; then
   restic init
 fi
 
-restic backup "$SRC_ROOT" --host "$RESTIC_HOST" --tag localcloud
+restic backup "$SRC_ROOT" \
+  --exclude "/sources/mattermost/db-dumps/*.tmp" \
+  --host "$RESTIC_HOST" \
+  --tag localcloud
 restic forget --host "$RESTIC_HOST" --tag localcloud \
   --keep-daily "$RESTIC_KEEP_DAILY" \
   --keep-weekly "$RESTIC_KEEP_WEEKLY" \

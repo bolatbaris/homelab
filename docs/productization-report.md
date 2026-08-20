@@ -15,7 +15,7 @@ Important changes:
 - Personal domains, names, and fixed private assumptions removed from tracked docs and examples.
 - `.env.example` now uses generic sample values.
 - systemd unit is generated dynamically for the actual checkout path.
-- public docs now describe install, security, architecture, contribution, and restore workflows.
+- public docs now describe install, security, architecture, contribution, restore workflows, and CI validation.
 
 ## Security Difference
 
@@ -30,8 +30,10 @@ Important changes:
 | Gitea | registration/install-lock risk in runtime config | locked registration/sign-in defaults | critical reduction |
 | n8n | minimal security defaults | explicit key, SSRF protection, API/playground disabled, risky nodes blocked | high reduction |
 | Backups | plain rsync mirror | encrypted/versioned restic snapshots | high reduction |
+| Mattermost chat history | live PostgreSQL files only | raw data plus logical `pg_dump` before restic snapshot | high reduction |
 | Backup container | normal network access | `network_mode: none` | medium reduction |
 | Networks | single flat bridge | separated edge/mgmt/db/dns networks | medium reduction |
+| AdGuard DNS | installer could reconfigure host DNS unconditionally | opt-in `dns` profile with explicit host resolver changes | high reduction |
 
 ## Watts Difference
 
@@ -44,6 +46,7 @@ Expected idle reduction:
 | Mattermost disabled by default | lower | removes app server plus Postgres |
 | Portainer disabled by default | slightly lower | removes management UI process |
 | restic backup | similar idle, higher backup-window CPU | encrypted snapshots use CPU only during backup |
+| Mattermost logical dump | slightly higher backup-window CPU/I/O | pg_dump runs before restic when chat is enabled |
 | n8n retention reduced | slightly lower disk churn | less execution data retained |
 
 Practical estimate:
@@ -51,6 +54,7 @@ Practical estimate:
 - Disabling Mattermost + Postgres by default may save roughly 1-4 W at idle on older laptops.
 - Disabling Portainer by default may save less than 1 W.
 - Restic may add temporary CPU load during the scheduled backup.
+- Mattermost logical dumps may add temporary CPU and disk I/O before the restic backup when `chat` is enabled.
 
 Measure real watts with a wall power meter:
 
@@ -66,7 +70,7 @@ Measure real watts with a wall power meter:
 ## Remaining Product Work
 
 - Publish a release tarball or container image set.
-- Add CI once a public remote exists.
 - Decide whether this remains a self-hosted product or grows into a hosted SaaS with a control plane.
 - Pin image versions/digests for production releases.
+- Add automated app-consistent backup hooks for additional write-heavy services.
 - Add an upgrade command or documented release upgrade flow.

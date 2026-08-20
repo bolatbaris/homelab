@@ -49,10 +49,11 @@ The backup sidecar runs cron at `03:00` in the configured `TZ`.
 
 Flow:
 
-1. Verify `/backup` is a real mount point when `BACKUP_REQUIRE_MOUNT=true`.
-2. Initialize restic at `${RESTIC_REPOSITORY}` if needed.
-3. Snapshot `/sources`.
-4. Apply retention with daily, weekly, and monthly keep counts.
+1. Verify the backup-volume marker exists when `BACKUP_REQUIRE_MOUNT=true`.
+2. When `chat` is enabled, write a logical Mattermost PostgreSQL dump to `./data/mattermost/db-dumps`.
+3. Initialize restic at `${RESTIC_REPOSITORY}` if needed.
+4. Snapshot `/sources`.
+5. Apply retention with daily, weekly, and monthly keep counts.
 
 Backups are encrypted and versioned. The restic password must be stored separately from the backup disk.
 
@@ -66,17 +67,16 @@ Backups are encrypted and versioned. The restic password must be stored separate
 
 ## Optional Services
 
-Portainer:
+Optional services are enabled through `LOCALCLOUD_PROFILES` in `.env`. The installer validates profile names, validates profile-specific secrets, and restarts the selected profile set so disabled optional containers do not keep running after configuration changes.
 
-```sh
-podman-compose -f docker-compose.yml --profile mgmt up -d portainer
-```
+Examples:
 
-Mattermost:
+- `LOCALCLOUD_PROFILES=dns` enables AdGuard.
+- `LOCALCLOUD_PROFILES=mgmt` enables Portainer.
+- `LOCALCLOUD_PROFILES=chat` enables Mattermost + PostgreSQL + logical dumps.
+- `LOCALCLOUD_PROFILES=dns,chat` enables multiple profiles.
 
-```sh
-podman-compose -f docker-compose.yml --profile chat up -d mattermost-postgres mattermost
-```
+After editing `.env`, rerun `./install.sh` so the generated systemd user service matches the selected profiles.
 
 ## Product Direction
 

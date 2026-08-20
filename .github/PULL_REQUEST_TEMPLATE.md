@@ -9,6 +9,7 @@
 - [ ] Security-sensitive changes fail closed (require explicit config rather than guessing).
 - [ ] Updated `README.md`, `deployment.md`, and `SECURITY.md` if behavior changed.
 - [ ] Ran locally:
-  - [ ] `bash -n install.sh && bash -n run.sh && sh -n backup/backup.sh`
+  - [ ] `bash -n install.sh && bash -n restore.sh && bash -n run.sh && sh -n backup/backup.sh && sh -n backup/mattermost-db-dump.sh`
   - [ ] `podman-compose -f docker-compose.yml config`
+  - [ ] `podman-compose -f docker-compose.yml --profile dns --profile mgmt --profile chat config`
   - [ ] `git diff --check`

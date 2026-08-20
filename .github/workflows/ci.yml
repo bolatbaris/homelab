@@ -13,18 +13,24 @@ jobs:
       - name: Shell syntax
         run: |
           bash -n install.sh
+          bash -n restore.sh
           bash -n run.sh
           sh -n backup/backup.sh
+          sh -n backup/mattermost-db-dump.sh
 
       - name: ShellCheck (advisory)
         continue-on-error: true
-        run: shellcheck install.sh run.sh
+        run: shellcheck install.sh restore.sh run.sh backup/backup.sh backup/mattermost-db-dump.sh
 
       - name: Validate Compose config
         run: |
           cp .env.example .env
           docker compose -f docker-compose.yml config >/dev/null
-          docker compose -f docker-compose.yml -f compose.dev.yml config >/dev/null
+          docker compose -f docker-compose.yml --profile dns --profile mgmt --profile chat config >/dev/null
+          docker compose -f docker-compose.yml -f compose.dev.yml --profile dns --profile mgmt --profile chat config >/dev/null
+
+      - name: No auto-loaded override
+        run: test ! -f docker-compose.override.yml
 
       - name: Conflict markers
         run: |

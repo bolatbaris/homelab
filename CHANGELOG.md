@@ -10,7 +10,9 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - `install.sh` validated installer (fail-closed secret checks; generates the
   user systemd unit for the actual checkout path). `run.sh` kept as a
   compatibility wrapper.
-- `restore.sh` — ownership-safe restore from the encrypted restic backup.
+- `restore.sh` - ownership-safe restore from the encrypted restic backup.
+- `mattermost-postgres-dump` sidecar for the `chat` profile, creating logical
+  PostgreSQL dumps of Mattermost chat history before the nightly restic backup.
 - Encrypted, versioned **restic** backups with daily/weekly/monthly retention,
   replacing the plain rsync mirror.
 - Network segmentation: `edge`, `mgmt`, `db` (internal), and `dns` bridges; the
@@ -23,6 +25,9 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ### Changed
 - AdGuard moved behind the `dns` profile; the installer reconfigures the host
   resolver only when that profile is enabled.
+- Installer profile handling is now normalized and fail-closed; rerunning the
+  installer stops any old LocalCloud containers before starting the selected
+  profile set through the generated systemd user service.
 - Gitea registration and anonymous view locked down; n8n hardened (explicit
   encryption key, SSRF protection, public API and higher-risk nodes disabled).
 - Dev ports moved from an auto-loaded override to an explicit `compose.dev.yml`
@@ -33,8 +38,12 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Backup mount guard now checks a marker file on the volume. The previous
   `mountpoint -q` check was defeated by the container bind-mount and never
   fired, so an unmounted disk could silently fill the host filesystem.
+- Restore now uses the same validated optional profiles for stopping and
+  restarting the stack.
 - Backup run history persists on the backup volume (survives container
   recreation).
+- Mattermost chat history now has a restore-friendly logical dump in addition
+  to the raw PostgreSQL data directory snapshot.
 
 ### Security
 - All examples genericized; personal domain and IP removed from the working

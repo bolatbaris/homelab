@@ -1,7 +1,7 @@
 # Reference only. install.sh generates the real unit at
 # ~/.config/systemd/user/localcloud.service for the actual checkout path and any
 # enabled LOCALCLOUD_PROFILES. Use this file only for a manual or system-level
-# setup, and edit the paths below to match your install.
+# setup, and edit the paths and --profile flags below to match your install.
 
 [Unit]
 Description=LocalCloud Stack
@@ -11,9 +11,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/opt/localcloud-stack
-ExecStart=/usr/bin/podman-compose -f /opt/localcloud-stack/docker-compose.yml up -d
-ExecStop=/usr/bin/podman-compose -f /opt/localcloud-stack/docker-compose.yml down
+WorkingDirectory="/opt/localcloud-stack"
+ExecStart="/usr/bin/podman-compose" -f "/opt/localcloud-stack/docker-compose.yml" up -d
+ExecStop="/usr/bin/podman-compose" -f "/opt/localcloud-stack/docker-compose.yml" down
 Restart=on-failure
 RestartSec=10s
 TimeoutStartSec=120

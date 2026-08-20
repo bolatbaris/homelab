@@ -50,6 +50,8 @@ Production baseline:
 - ext4 filesystem inside the unlocked LUKS volume.
 - `BACKUP_REQUIRE_MOUNT=true`.
 - Restore tested before storing important data.
+- Cold/manual backups before major upgrades, especially when the `chat` profile is enabled and PostgreSQL is active.
+- Host disk encryption recommended when using `chat`, because `./data/mattermost` contains the live PostgreSQL database and logical dumps of message history before restic encrypts the backup copy.
 
 ## Updates
 
@@ -67,6 +69,6 @@ Take a restic snapshot before updates.
 
 ## Responsible Disclosure
 
-Report security vulnerabilities privately — do not open a public issue. Preferred: open a GitHub private security advisory ("Report a vulnerability" under the repository **Security** tab). Maintainers aim to acknowledge within a few days and to coordinate a fix and disclosure timeline with the reporter.
+Report security vulnerabilities privately - do not open a public issue. Preferred: open a GitHub private security advisory ("Report a vulnerability" under the repository **Security** tab). Maintainers aim to acknowledge within a few days and to coordinate a fix and disclosure timeline with the reporter.
 
 If you run a fork or hosted product based on this project, replace this section with your own monitored security contact.

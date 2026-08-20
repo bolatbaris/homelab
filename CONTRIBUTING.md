@@ -20,9 +20,12 @@ Do not commit `.env`, `data/`, `mock-usb/`, generated service units, or local ru
 - Run:
   ```sh
   bash -n install.sh
+  bash -n restore.sh
   bash -n run.sh
   sh -n backup/backup.sh
+  sh -n backup/mattermost-db-dump.sh
   podman-compose -f docker-compose.yml config
+  podman-compose -f docker-compose.yml --profile dns --profile mgmt --profile chat config
   git diff --check
   ```
 

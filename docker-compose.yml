@@ -152,6 +152,32 @@ services:
       - db-net
     # NO ports: ever - database is internal-only, never exposed
 
+  mattermost-postgres-dump:
+    image: ${POSTGRES_IMAGE:-docker.io/postgres:15-alpine}
+    container_name: mattermost-postgres-dump
+    profiles:
+      - chat
+    restart: unless-stopped
+    depends_on:
+      mattermost-postgres:
+        condition: service_healthy
+    command: ["/bin/sh", "/usr/local/bin/mattermost-db-dump.sh"]
+    environment:
+      - TZ=${TZ:-UTC}
+      - PGHOST=mattermost-postgres
+      - PGPORT=5432
+      - PGUSER=mmuser
+      - PGPASSWORD=${MATTERMOST_DB_PASSWORD}
+      - PGDATABASE=mattermost
+      - MATTERMOST_DB_DUMP_HOUR=${MATTERMOST_DB_DUMP_HOUR:-2}
+      - MATTERMOST_DB_DUMP_MINUTE=${MATTERMOST_DB_DUMP_MINUTE:-45}
+      - MATTERMOST_DB_DUMP_KEEP_DAYS=${MATTERMOST_DB_DUMP_KEEP_DAYS:-14}
+    volumes:
+      - ./backup/mattermost-db-dump.sh:/usr/local/bin/mattermost-db-dump.sh:ro
+      - ./data/mattermost/db-dumps:/dumps
+    networks:
+      - db-net
+
   backup:
     build: ./backup
     container_name: backup
