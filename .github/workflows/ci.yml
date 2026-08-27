@@ -17,14 +17,16 @@ jobs:
           bash -n backup-automount.sh
           bash -n run.sh
           bash -n tests/compose-guards.sh
+          bash -n tests/appdb-integration.sh
           sh -n backup/backup.sh
-          sh -n backup/mattermost-db-dump.sh
+          sh -n backup/pg-dump.sh
+          sh -n db/initdb/10-appdb-seed.sh
 
       - name: ShellCheck (advisory)
         continue-on-error: true
         run: shellcheck install.sh restore.sh run.sh backup-automount.sh
-             tests/compose-guards.sh
-             backup/backup.sh backup/mattermost-db-dump.sh
+             tests/compose-guards.sh tests/appdb-integration.sh
+             backup/backup.sh backup/pg-dump.sh db/initdb/10-appdb-seed.sh
 
       - name: Validate Compose config
         run: |

@@ -169,7 +169,7 @@ services:
     # pg_isready and skips the run when the database is not reachable yet.
     depends_on:
       - mattermost-postgres
-    command: ["/bin/sh", "/usr/local/bin/mattermost-db-dump.sh"]
+    command: ["/bin/sh", "/usr/local/bin/pg-dump.sh"]
     environment:
       - TZ=${TZ:-UTC}
       - PGHOST=mattermost-postgres
@@ -177,11 +177,16 @@ services:
       - PGUSER=mmuser
       - PGPASSWORD=${MATTERMOST_DB_PASSWORD}
       - PGDATABASE=mattermost
-      - MATTERMOST_DB_DUMP_HOUR=${MATTERMOST_DB_DUMP_HOUR:-2}
-      - MATTERMOST_DB_DUMP_MINUTE=${MATTERMOST_DB_DUMP_MINUTE:-45}
-      - MATTERMOST_DB_DUMP_KEEP_DAYS=${MATTERMOST_DB_DUMP_KEEP_DAYS:-14}
+      # Single-database mode. With this prefix the filenames are byte-for-byte
+      # what the old mattermost-db-dump.sh produced, so existing installs and
+      # their restore instructions are unaffected.
+      - DB_DUMP_ALL=false
+      - DB_DUMP_PREFIX=mattermost
+      - DB_DUMP_HOUR=${MATTERMOST_DB_DUMP_HOUR:-2}
+      - DB_DUMP_MINUTE=${MATTERMOST_DB_DUMP_MINUTE:-45}
+      - DB_DUMP_KEEP_DAYS=${MATTERMOST_DB_DUMP_KEEP_DAYS:-14}
     volumes:
-      - ./backup/mattermost-db-dump.sh:/usr/local/bin/mattermost-db-dump.sh:ro
+      - ./backup/pg-dump.sh:/usr/local/bin/pg-dump.sh:ro
       - ./data/mattermost/db-dumps:/dumps
     networks:
       - db-net

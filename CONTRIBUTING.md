@@ -23,7 +23,8 @@ Do not commit `.env`, `data/`, `mock-usb/`, generated service units, or local ru
   bash -n restore.sh
   bash -n run.sh
   sh -n backup/backup.sh
-  sh -n backup/mattermost-db-dump.sh
+  sh -n backup/pg-dump.sh
+  sh -n db/initdb/10-appdb-seed.sh
   podman-compose -f docker-compose.yml config
   podman-compose -f docker-compose.yml --profile dns --profile mgmt --profile chat config
   git diff --check

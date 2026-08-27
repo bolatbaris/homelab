@@ -136,6 +136,40 @@ wait_ready || { fail "appdb never became ready on restart"; exit 1; }
 [ "$(q "SELECT 1 FROM pg_tables WHERE tablename='itest_marker'")" = "1" ] \
   && pass "existing data survived the restart" || fail "existing data lost"
 
+echo "# --- dump: DB_DUMP_ALL=true writes globals plus one file per database ---"
+q "CREATE DATABASE beta" >/dev/null
+run_dump "$DUMP_VOL" -e PGDATABASE=postgres -e DB_DUMP_ALL=true
+dumps="$(vol_ls "$DUMP_VOL")"
+
+printf '%s\n' "$dumps" | grep -qx 'globals-latest.sql' \
+  && pass "globals-latest.sql written" || fail "globals-latest.sql missing"
+for db in alpha beta postgres; do
+  printf '%s\n' "$dumps" | grep -qx "$db-latest.dump" \
+    && pass "$db-latest.dump written" || fail "$db-latest.dump missing"
+done
+printf '%s\n' "$dumps" | grep -q '\.tmp$' \
+  && fail "temp files left behind" || pass "no temp files left behind"
+
+if vol_grep "$DUMP_VOL" 'CREATE ROLE appuser' globals-latest.sql; then
+  pass "globals dump carries the application role"
+else
+  fail "globals dump does not contain the application role"
+fi
+
+echo "# --- dump: DB_DUMP_ALL=false reproduces the Mattermost filenames ---"
+run_dump "$MM_DUMP_VOL" -e PGDATABASE=alpha -e DB_DUMP_ALL=false -e DB_DUMP_PREFIX=mattermost
+mmdumps="$(vol_ls "$MM_DUMP_VOL")"
+
+printf '%s\n' "$mmdumps" | grep -qx 'mattermost-latest.dump' \
+  && pass "mattermost-latest.dump written (single-database mode unchanged)" \
+  || fail "mattermost-latest.dump missing"
+printf '%s\n' "$mmdumps" | grep -qE '^mattermost-[0-9]{8}-[0-9]{6}\.dump$' \
+  && pass "timestamped mattermost dump written" \
+  || fail "timestamped mattermost dump missing"
+printf '%s\n' "$mmdumps" | grep -q '^globals-' \
+  && fail "single-database mode wrote globals (it must not)" \
+  || pass "single-database mode wrote no globals"
+
 echo "# --- a bad identifier must be rejected, not quoted-and-hoped ---"
 # The seed builds SQL identifiers, which cannot be parameterized. If validation
 # ever regresses, this name is what an injection attempt looks like.
