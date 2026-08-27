@@ -97,7 +97,7 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. The `tailscale0` rule (`sudo ufw allow in on tailscale0`) is only needed once the Private tier transport is installed - see section 11. Drop the rules for services you do not run.
+The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. The `tailscale0` rule (`sudo ufw allow in on tailscale0`) is only needed once the Private tier transport is installed - see section 12. Drop the rules for services you do not run.
 
 ## 5. Encrypted Backup Disk
 
@@ -228,7 +228,44 @@ The scheduled backup is file-level. For the strongest restore consistency before
 
 Mattermost chat history lives in PostgreSQL. With the `chat` profile enabled, `mattermost-postgres-dump` creates `./data/mattermost/db-dumps/mattermost-latest.dump` before the default restic snapshot. If a raw PostgreSQL data restore ever fails, rebuild the Mattermost database from that dump with `pg_restore` against a clean `mattermost-postgres` container.
 
-## 11. Private Tier (Tailscale)
+## 11. Recovering A Wedged Stack
+
+If a start fails hard, `podman ps -a` can show containers stuck in `Stopping`.
+That happens when the unit's cgroup was killed while containers were still
+running, taking each container's `conmon` monitor with it, so Podman can no
+longer reap them.
+
+Force-remove the LocalCloud containers by name - never `podman rm -f -a`, which
+would also destroy unrelated containers on the host:
+
+```sh
+systemctl --user stop localcloud.service
+systemctl --user reset-failed localcloud.service
+podman rm -f cloudflared glances gitea n8n adguard backup \
+             mattermost mattermost-postgres mattermost-postgres-dump
+```
+
+Anything still listed by `podman ps -a --filter status=stopping` needs Podman's
+cleanup handler run by hand before it can be removed:
+
+```sh
+podman container cleanup --force <name>
+podman rm -f <name>
+```
+
+Then clear the leftover pod and networks and re-run the installer:
+
+```sh
+podman pod ps
+podman pod rm -f <pod-id>
+podman network rm homelab_edge-net homelab_dns-net homelab_mgmt-net homelab_db-net
+./install.sh
+```
+
+A reboot is a safe last resort: all state lives under `./data`. Pull the latest
+checkout first, because lingering restarts the service automatically at boot.
+
+## 12. Private Tier (Tailscale)
 
 Optional. Enables the Private (Tier B) exposure tier - see [SECURITY.md](SECURITY.md) for the policy and [docs/tailscale.md](docs/tailscale.md) for the design.
 

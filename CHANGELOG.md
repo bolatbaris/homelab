@@ -48,6 +48,11 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- Generated systemd unit bounds its restart loop (`StartLimitBurst=3`) and gets
+  `TimeoutStopSec=300`. A failing start previously retried indefinitely, and
+  every retry SIGKILLed the unit cgroup including each container's `conmon`,
+  which left containers stuck in the `Stopping` state that only a force-remove
+  clears.
 - Gitea data directory ownership. The installer mapped the rootless uid for n8n
   and Mattermost but never for Gitea, whose process runs as uid 1000 inside the
   container. With `./data/<svc>` hardened to 0700 the directory reads as

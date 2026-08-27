@@ -260,6 +260,12 @@ cat > "$HOME/.config/systemd/user/$SERVICE_NAME" <<EOF
 Description=LocalCloud Stack
 After=network-online.target podman.socket
 Wants=network-online.target
+# Bound restart loop. A failing "up -d" that systemd keeps retrying kills the
+# cgroup - conmon included - on every attempt, which wedges containers in the
+# "Stopping" state that only a force-remove clears. Three attempts, then stop
+# and let the operator read the logs.
+StartLimitIntervalSec=600
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
@@ -270,6 +276,10 @@ ExecStop="$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE"$PROFILE_ARGS_STRING down
 Restart=on-failure
 RestartSec=10s
 TimeoutStartSec=900
+# "down" stops nine containers, each with its own SIGTERM grace period. The
+# default stop timeout can expire mid-teardown and SIGKILL conmon, leaving
+# containers unreapable.
+TimeoutStopSec=300
 
 [Install]
 WantedBy=default.target
