@@ -48,6 +48,15 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- Gitea data directory ownership. The installer mapped the rootless uid for n8n
+  and Mattermost but never for Gitea, whose process runs as uid 1000 inside the
+  container. With `./data/<svc>` hardened to 0700 the directory reads as
+  root-owned inside the user namespace, so Gitea failed with
+  `stat /data/gitea/conf/app.ini: permission denied` and crash-looped until the
+  unit hit its start timeout.
+- Images are pulled before the stack is handed to systemd, and the unit's
+  `TimeoutStartSec` is raised to 900s. A cold install previously expired the
+  120s timeout mid-pull and left a half-started stack.
 - Generated systemd user unit no longer quotes `WorkingDirectory`. systemd does
   not strip quotes from that directive, so the quoted path was not absolute and
   systemd >= 253 rejected the whole unit with "has a bad unit file setting".

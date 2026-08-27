@@ -163,9 +163,11 @@ PODMAN_COMPOSE_BIN="$(command -v podman-compose)"
 
 # Translate LOCALCLOUD_PROFILES (e.g. "dns,chat") into repeated --profile flags.
 PROFILE_ARGS_STRING=""
+PROFILE_ARGS=()
 for p in $(printf '%s' "$LOCALCLOUD_PROFILES" | tr ',' ' '); do
   if [ -n "$p" ]; then
     PROFILE_ARGS_STRING="$PROFILE_ARGS_STRING --profile $p"
+    PROFILE_ARGS+=(--profile "$p")
   fi
 done
 info "Enabled profiles: ${LOCALCLOUD_PROFILES:-none}"
@@ -202,8 +204,15 @@ mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
 chmod go-rwx ./data 2>/dev/null || true
 for d in ./data/*/; do chmod go-rwx "$d" 2>/dev/null || true; done
 
+# Every ./data/<svc> is mode 0700 and owned by the host user, which inside the
+# rootless user namespace reads as root:root. Containers whose process drops to
+# a non-root uid therefore cannot even traverse their own data directory, so
+# each one needs its uid mapped through `podman unshare chown`. Services that
+# stay root inside the container (adguard, glances, portainer, backup) need
+# nothing here.
 info "Fixing rootless Podman bind-mount ownership"
 podman unshare chown -R 1000:1000 ./data/n8n
+podman unshare chown -R 1000:1000 ./data/gitea
 podman unshare chown -R 2000:2000 \
   ./data/mattermost/config ./data/mattermost/data ./data/mattermost/logs \
   ./data/mattermost/plugins ./data/mattermost/client-plugins ./data/mattermost/bleve-indexes
@@ -260,7 +269,7 @@ ExecStart="$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE"$PROFILE_ARGS_STRING up -d
 ExecStop="$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE"$PROFILE_ARGS_STRING down
 Restart=on-failure
 RestartSec=10s
-TimeoutStartSec=120
+TimeoutStartSec=900
 
 [Install]
 WantedBy=default.target
@@ -271,6 +280,14 @@ systemctl --user enable "$SERVICE_NAME"
 info "Stopping any existing LocalCloud containers before applying selected profiles"
 if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat down --remove-orphans; then
   info "WARNING: pre-start cleanup exited non-zero (normal when nothing was running)."
+fi
+
+# Pull before handing over to systemd: a cold first install downloads several
+# hundred MB, and the unit's TimeoutStartSec would otherwise expire mid-pull and
+# SIGTERM a half-started stack.
+info "Pre-pulling service images"
+if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} pull; then
+  info "WARNING: image pre-pull exited non-zero (the locally built backup image has nothing to pull)."
 fi
 
 # Advisory: catches unit-file regressions before the restart hides them behind
