@@ -19,16 +19,19 @@ LocalCloud Stack is an installable self-hosted stack for private services on use
 | `dns-net` | AdGuard DNS/UI |
 | `mgmt-net` | Portainer and Podman socket access |
 | `db-net` | internal database traffic |
+| `tailscale0` | host interface for Tier B (Private) service binds via Tailscale |
 
 The backup container uses `network_mode: none`.
 
 ## Exposure Model
 
-- Cloudflare Tunnel handles public HTTP(S) access without router HTTP port forwards.
-- AdGuard binds DNS and UI to `LAN_IP`.
-- Gitea SSH binds to `LAN_IP:GITEA_SSH_PORT`.
-- Portainer is behind the `mgmt` profile.
-- Mattermost is behind the `chat` profile.
+Services follow the three-tier exposure model defined in [SECURITY.md](SECURITY.md):
+
+- **Tier A (Public)** - published through Cloudflare Tunnel with per-hostname Access policies: Gitea HTTP, n8n, Glances, Mattermost.
+- **Tier B (Private)** - reachable only through Tailscale, bound to the tailscale0 address: planned for PostgreSQL and the env store; Gitea SSH moves here from its LAN bind later.
+- **Tier C (Internal)** - never published: mattermost-postgres, backup (`network_mode: none`), Portainer (mgmt profile).
+
+Current transitional binds: AdGuard binds DNS and UI to `LAN_IP`; Gitea SSH binds to `LAN_IP:GITEA_SSH_PORT` until the Tier B migration.
 
 ## Data Model
 

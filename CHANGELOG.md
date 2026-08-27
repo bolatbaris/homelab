@@ -21,8 +21,21 @@ Notable changes to LocalCloud Stack. Format loosely follows
   `chat` (Mattermost + PostgreSQL).
 - `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md`, GitHub CI, and
   issue/PR templates.
+- `docs/tailscale.md` - Tailscale integration design for the Private (Tier B)
+  transport: host-level install, installer integration, and the first Tier B
+  service contract.
 
 ### Changed
+- `install.sh` validates `TAILSCALE_ENABLED`/`TAILSCALE_IP` fail-closed and
+  persists the detected tailscale0 address to `.env` for future Tier B service
+  binds.
+- README, deployment runbook, and architecture docs updated for the
+  three-tier exposure model and the optional Tailscale transport.
+- SECURITY.md now defines a three-tier exposure model (Public / Private /
+  Internal) with per-tier mandatory controls and a Tailscale remote-access
+  policy.
+- CI rejects unbounded `"<port>:<port>"` publishes in compose files so future
+  Private-tier services cannot silently bind to all interfaces.
 - AdGuard moved behind the `dns` profile; the installer reconfigures the host
   resolver only when that profile is enabled.
 - Installer profile handling is now normalized and fail-closed; rerunning the

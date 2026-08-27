@@ -39,6 +39,7 @@ Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-sepa
 - Cloudflare account and Tunnel token
 - Static LAN IP for the server
 - USB or external disk for backups
+- Optional: Tailscale on the host for the Private (Tier B) transport
 
 ## Install
 
@@ -94,14 +95,21 @@ podman-compose -f docker-compose.yml -f compose.dev.yml --profile chat up -d
 
 ## Security Model
 
-- Web services are intended to be exposed through Cloudflare Tunnel.
+Services follow a three-tier exposure model:
+
+- **Public (Tier A)** - published through Cloudflare Tunnel under per-hostname Cloudflare Access policies.
+- **Private (Tier B)** - reachable only through Tailscale; services bind to the tailscale0 address, never to all interfaces.
+- **Internal (Tier C)** - never published; loopback or internal compose networks only, reached via SSH.
+
+Additional rules:
+
 - Admin-style apps should be protected by Cloudflare Access and MFA.
 - Portainer is opt-in because it controls the Podman API socket.
 - Mattermost is opt-in because it adds public attack surface and a database sidecar.
 - Backups are encrypted restic snapshots, not plain folder mirrors.
 - `docker-compose.override.yml` is ignored because Compose auto-loads it.
 
-See [SECURITY.md](SECURITY.md) for the deployment baseline.
+See [SECURITY.md](SECURITY.md) for the exposure-tier policy and [docs/tailscale.md](docs/tailscale.md) for the Private tier plan.
 
 ## Backups And Restore
 

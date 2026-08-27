@@ -32,6 +32,10 @@ jobs:
       - name: No auto-loaded override
         run: test ! -f docker-compose.override.yml
 
+      - name: No unbounded port publishes
+        run: |
+          ! grep -nE '^[[:space:]]*-[[:space:]]*"?[0-9]+:[0-9]+' docker-compose.yml compose.dev.yml
+
       - name: Conflict markers
         run: |
           if git grep -nE '^(<<<<<<<|>>>>>>>)' -- .; then

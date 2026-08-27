@@ -79,7 +79,7 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. Drop the rules for services you do not run.
+The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. The `tailscale0` rule (`sudo ufw allow in on tailscale0`) is only needed once the Private tier transport is installed - see section 11. Drop the rules for services you do not run.
 
 ## 5. Encrypted Backup Disk
 
@@ -209,3 +209,47 @@ Restore requires the **same** `.env` secrets as the original deployment - especi
 The scheduled backup is file-level. For the strongest restore consistency before major upgrades, stop write-heavy services, run `podman exec backup /usr/local/bin/backup.sh`, then start the services again.
 
 Mattermost chat history lives in PostgreSQL. With the `chat` profile enabled, `mattermost-postgres-dump` creates `./data/mattermost/db-dumps/mattermost-latest.dump` before the default restic snapshot. If a raw PostgreSQL data restore ever fails, rebuild the Mattermost database from that dump with `pg_restore` against a clean `mattermost-postgres` container.
+
+## 11. Private Tier (Tailscale)
+
+Optional. Enables the Private (Tier B) exposure tier - see [SECURITY.md](SECURITY.md) for the policy and [docs/tailscale.md](docs/tailscale.md) for the design.
+
+1. Install and authenticate on the host:
+
+   ```sh
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up
+   ```
+
+   Use an SSO account protected by MFA. In the admin console: least-privilege ACLs, key expiry disabled for this server node only, MagicDNS on, "Override local DNS" OFF for this server (the `dns` profile owns `/etc/resolv.conf`). No subnet routing.
+
+2. Firewall:
+
+   ```sh
+   sudo ufw allow in on tailscale0
+   ```
+
+3. Set in `.env`:
+
+   ```
+   TAILSCALE_ENABLED=true
+   ```
+
+   `TAILSCALE_IP` can stay empty: `./install.sh` detects the tailscale0 IPv4, validates it, and writes it back to `.env` for Tier B service binds. A pre-set `TAILSCALE_IP` must match the detected address or the installer fails.
+
+4. Rerun `./install.sh`. The installer fails closed when `TAILSCALE_ENABLED=true` but the `tailscale` binary is missing or the node has no tailscale0 address.
+
+Verify from an enrolled device on a foreign network:
+
+```sh
+tailscale status
+ssh <tailscale-ip>
+```
+
+On the server, confirm Tier B services (when introduced) bind only to the tailscale address:
+
+```sh
+ss -tlnp | grep <port>   # foreign address must be the 100.x tailscale IP, never 0.0.0.0
+```
+
+Rollback: `sudo tailscale down`, remove the ufw rule, set `TAILSCALE_ENABLED=false`, rerun `./install.sh`.

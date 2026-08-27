@@ -74,6 +74,29 @@ profile_enabled() {
   esac
 }
 
+# Validate the optional Private (Tier B) transport (docs/tailscale.md). When
+# enabled, the tailscale binary must be installed and the node must have a
+# tailscale0 IPv4. A pre-set TAILSCALE_IP must match the detected address;
+# when empty, the detected address is returned in TAILSCALE_IP.
+check_tailscale() {
+  case "$TAILSCALE_ENABLED" in
+    ""|false) return 0 ;;
+    true) ;;
+    *) fail "TAILSCALE_ENABLED must be 'true' or 'false' (or empty)." ;;
+  esac
+  require_command tailscale
+  local detected
+  detected="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+  if [ -z "$detected" ]; then
+    fail "TAILSCALE_ENABLED=true but the node has no tailscale0 IPv4. Complete docs/tailscale.md Phase V1 first."
+  fi
+  if [ -n "$TAILSCALE_IP" ] && [ "$TAILSCALE_IP" != "$detected" ]; then
+    fail "TAILSCALE_IP='$TAILSCALE_IP' does not match the detected tailscale0 address '$detected'."
+  fi
+  TAILSCALE_IP="$detected"
+  info "Private (Tier B) transport enabled; tailscale0 address ${TAILSCALE_IP}"
+}
+
 info "LocalCloud Stack installer"
 cd "$REPO_DIR"
 
@@ -122,6 +145,8 @@ done
 BACKUP_DEST_PATH="$(env_value BACKUP_DEST_PATH)"
 BACKUP_REQUIRE_MOUNT="$(env_value BACKUP_REQUIRE_MOUNT)"
 LOCALCLOUD_PROFILES="$(normalize_profiles "$(env_value LOCALCLOUD_PROFILES)")"
+TAILSCALE_ENABLED="$(env_value TAILSCALE_ENABLED)"
+TAILSCALE_IP="$(env_value TAILSCALE_IP)"
 PODMAN_COMPOSE_BIN="$(command -v podman-compose)"
 
 # Translate LOCALCLOUD_PROFILES (e.g. "dns,chat") into repeated --profile flags.
@@ -138,6 +163,20 @@ if profile_enabled mgmt; then require_env_value PODMAN_SOCKET_PATH; fi
 if profile_enabled chat; then
   require_env_value MATTERMOST_DB_PASSWORD
   require_env_value MATTERMOST_SUBDOMAIN
+fi
+
+check_tailscale
+
+# Persist the detected tailscale0 address so Tier B service binds resolve from
+# .env (podman-compose reads .env from the project directory).
+if [ "$TAILSCALE_ENABLED" = "true" ]; then
+  if grep -q "^TAILSCALE_IP=" .env; then
+    sed -i "s|^TAILSCALE_IP=.*|TAILSCALE_IP=${TAILSCALE_IP}|" .env
+  else
+    printf '\n# tailscale0 address detected by install.sh - used by Tier B service binds.\nTAILSCALE_IP=%s\n' "$TAILSCALE_IP" >> .env
+  fi
+  chmod 600 .env
+  info "Persisted TAILSCALE_IP=${TAILSCALE_IP} to .env"
 fi
 
 info "Creating private data directories"
@@ -211,6 +250,10 @@ info "Stopping any existing LocalCloud containers before applying selected profi
 
 info "Starting stack through systemd user service"
 systemctl --user restart "$SERVICE_NAME"
+
+if [ "$TAILSCALE_ENABLED" = "true" ]; then
+  info "Tailscale Tier B transport active: confirm 'sudo ufw allow in on tailscale0' and least-privilege ACLs (docs/tailscale.md)."
+fi
 
 info "Done"
 printf 'Check status with:\n  systemctl --user status %s\n  podman-compose -f docker-compose.yml%s ps\n' "$SERVICE_NAME" "$PROFILE_ARGS_STRING"
