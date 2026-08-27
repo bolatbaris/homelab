@@ -223,6 +223,25 @@ Optional. Enables the Private (Tier B) exposure tier - see [SECURITY.md](SECURIT
 
    Use an SSO account protected by MFA. In the admin console: least-privilege ACLs, key expiry disabled for this server node only, MagicDNS on, "Override local DNS" OFF for this server (the `dns` profile owns `/etc/resolv.conf`). No subnet routing.
 
+   Example least-privilege ACL in the current `grants` syntax. Two syntax notes from real installs: the `ip` field takes **plain port numbers** (`"22"`, not `"22/tcp"` or `"tcp/22"`), and device hostnames are not valid rule subjects - alias them through `hosts` with their tailnet IPs (`tailscale status` lists them):
+
+   ```json
+   {
+       "hosts": {
+           "server-alias": "100.x.y.z/32",
+           "laptop-alias": "100.a.b.c/32"
+       },
+       "grants": [
+           {"src": ["laptop-alias"], "dst": ["server-alias"], "ip": ["22"]}
+       ],
+       "tests": [
+           {"src": "100.a.b.c", "accept": ["server-alias:22"], "deny": ["server-alias:3001"]}
+       ]
+   }
+   ```
+
+   Plain `ping` (ICMP) is blocked by this rule set on purpose - use `tailscale ping <server>` to verify the WireGuard path instead.
+
 2. Firewall:
 
    ```sh

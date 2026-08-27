@@ -65,6 +65,12 @@ instead of a LAN IP.
      named ports on the server);
    - disable key expiry for the server node only;
    - MagicDNS on; "Override local DNS" OFF on the server.
+
+   ACL syntax notes (current `grants` format, see deployment.md section 11 for
+   a full example): the `ip` field accepts plain port numbers only (`"22"`),
+   not `"22/tcp"` or `"tcp/22"`; device hostnames must be aliased via `hosts`
+   with their tailnet IPs; ICMP is intentionally denied, so verify with
+   `tailscale ping` instead of `ping`.
 5. No subnet routing (`--advertise-routes` stays unset).
 
 Verify:
