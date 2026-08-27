@@ -6,6 +6,23 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- Application database behind a new opt-in `db` profile: PostgreSQL (`appdb`),
+  Adminer (`appdb-adminer`), and a logical-dump sidecar (`appdb-dump`), for
+  first-party backend applications. This is the stack's first Private (Tier B)
+  service - it binds the tailscale0 address only, lives on a new
+  `internal: true` `appdb-net`, and is deliberately kept off `edge-net` so
+  `cloudflared` cannot route to it even if a public hostname is created by
+  mistake. Roles and databases are seeded from `.env` on a fresh cluster only,
+  so a restore always wins over the seed. Separate from `mattermost-postgres`
+  in every respect, including its image pin.
+- `tests/compose-guards.sh` - exposure assertions runnable locally and in CI:
+  published ports must name an allowed interface, Tier B services must not join
+  `edge-net`, and rendering the `db` profile with an empty `TAILSCALE_IP` must
+  fail while a set one must bind that address and no wildcard.
+- `tests/appdb-integration.sh` - live-container tests for the seed contract
+  (including that it does not re-run on a populated cluster, and that an
+  injection attempt through `APPDB_DATABASES` is rejected rather than quoted)
+  and for both dump modes.
 - `backup-automount.sh` - makes the backup disk mount itself at boot, so backups
   survive a power cut with nobody present. Handles a plain filesystem (a
   UUID-keyed `fstab` entry) and a LUKS-encrypted disk (root-only keyfile, LUKS
@@ -42,6 +59,16 @@ Notable changes to LocalCloud Stack. Format loosely follows
   service contract.
 
 ### Changed
+- `backup/mattermost-db-dump.sh` is now `backup/pg-dump.sh`, shared by both dump
+  sidecars. Its environment contract is generic and compose maps each service
+  onto it; the user-facing `MATTERMOST_DB_DUMP_*` keys are unchanged and the
+  Mattermost filenames are byte-for-byte identical. A new `DB_DUMP_ALL=true`
+  mode dumps `pg_dumpall --globals-only` plus every database, which a server
+  hosting an unknown number of application databases needs and a single-purpose
+  one did not.
+- `install.sh` and `restore.sh` accept the `db` profile. The installer refuses
+  it unless `TAILSCALE_ENABLED=true`, and probes that podman-compose actually
+  implements `${VAR:?message}` before relying on it as an exposure guard.
 - `install.sh` validates `TAILSCALE_ENABLED`/`TAILSCALE_IP` fail-closed and
   persists the detected tailscale0 address to `.env` for future Tier B service
   binds.
@@ -64,6 +91,10 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- `docs/tailscale.md` linked to "deployment.md section 11" for the Private Tier
+  in two places; that section is 13, and 11 is *Recovering A Wedged Stack*.
+- `CONTRIBUTING.md` and the pull request template told contributors to
+  syntax-check `backup/mattermost-db-dump.sh`, which the rename removed.
 - Backup failures are visible again. `backup.sh` wrote aborts only to a log file
   inside the container, which cron also captured and which disappears when the
   container is recreated, so a stack whose nightly backup had been aborting said

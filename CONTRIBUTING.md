@@ -16,6 +16,7 @@ Do not commit `.env`, `data/`, `mock-usb/`, generated service units, or local ru
 - Keep defaults safe for private data.
 - Do not add public host ports unless they are LAN-bound and documented.
 - Keep optional/heavy services behind profiles.
+- New services must declare an exposure tier (SECURITY.md) and pass `./tests/compose-guards.sh`.
 - Update `README.md`, `deployment.md`, and `SECURITY.md` when behavior changes.
 - Run:
   ```sh
@@ -26,7 +27,8 @@ Do not commit `.env`, `data/`, `mock-usb/`, generated service units, or local ru
   sh -n backup/pg-dump.sh
   sh -n db/initdb/10-appdb-seed.sh
   podman-compose -f docker-compose.yml config
-  podman-compose -f docker-compose.yml --profile dns --profile mgmt --profile chat config
+  ./tests/compose-guards.sh
+  podman-compose -f docker-compose.yml --profile dns --profile mgmt --profile chat --profile db config
   git diff --check
   ```
 

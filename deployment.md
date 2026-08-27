@@ -52,7 +52,7 @@ Required production values:
 - `RESTIC_PASSWORD=<openssl rand -base64 48>`
 - `N8N_ENCRYPTION_KEY=<openssl rand -hex 32>`
 
-Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`.
+Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`, `db`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`. The `db` profile (section 14) needs `TAILSCALE_ENABLED=true` and the `APPDB_*` values; the installer refuses it otherwise.
 
 ## 3. Static LAN IP
 
@@ -97,7 +97,7 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. The `tailscale0` rule (`sudo ufw allow in on tailscale0`) is only needed once the Private tier transport is installed - see section 13. Drop the rules for services you do not run.
+The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. The `tailscale0` rule (`sudo ufw allow in on tailscale0`) is only needed once the Private tier transport is installed - see section 13. The `db` profile (section 14) needs no rule beyond that one, because PostgreSQL and Adminer bind the tailscale0 address. Drop the rules for services you do not run.
 
 ## 5. Encrypted Backup Disk
 
@@ -170,7 +170,7 @@ Expected base services:
 - n8n
 - backup
 
-Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`). When the `dns` profile is enabled, also verify AdGuard:
+Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`), `appdb` + `appdb-adminer` + `appdb-dump` (`db`). When the `dns` profile is enabled, also verify AdGuard:
 
 ```sh
 dig @"$LAN_IP" example.com
@@ -519,6 +519,8 @@ Optional. Enables the Private (Tier B) exposure tier - see [SECURITY.md](SECURIT
 
 4. Rerun `./install.sh`. The installer fails closed when `TAILSCALE_ENABLED=true` but the `tailscale` binary is missing or the node has no tailscale0 address.
 
+The `db` profile (section 14) depends on this section being complete; the installer refuses it otherwise.
+
 Verify from an enrolled device on a foreign network:
 
 ```sh
@@ -533,3 +535,170 @@ ss -tlnp | grep <port>   # foreign address must be the 100.x tailscale IP, never
 ```
 
 Rollback: `sudo tailscale down`, remove the ufw rule, set `TAILSCALE_ENABLED=false`, rerun `./install.sh`.
+
+## 14. Application Database (`db` Profile)
+
+Optional. A general-purpose PostgreSQL for your own backend applications, plus
+Adminer, plus a logical-dump sidecar. This is a Private (Tier B) service: it is
+reachable over Tailscale and from the `appdb-net` compose network, and it is
+never published to the LAN or routed through Cloudflare Tunnel.
+
+Separate from `mattermost-postgres` on purpose. That one stays internal to the
+`chat` profile, keeps its own PostgreSQL 15 pin, and shares no data, no network,
+and no restore blast radius with your application databases.
+
+### Prerequisites
+
+Section 13 first. The `db` profile is refused without it:
+
+```
+ERROR: LOCALCLOUD_PROFILES includes 'db', but TAILSCALE_ENABLED is not 'true'.
+```
+
+That is deliberate. Without a tailscale0 address the port mapping has nothing to
+bind to and would fall back to every interface, putting the database on the LAN.
+
+### Enable
+
+In `.env`:
+
+```sh
+LOCALCLOUD_PROFILES=db          # or e.g. dns,chat,db
+TAILSCALE_ENABLED=true
+
+APPDB_SUPERUSER_PASSWORD=<openssl rand -hex 32>
+APPDB_APP_USER=appuser
+APPDB_APP_PASSWORD=<openssl rand -hex 32>
+APPDB_DATABASES=app1,app2
+```
+
+Hex, not base64: `+`, `/`, and `=` break a `postgres://` connection string.
+
+Then:
+
+```sh
+./install.sh
+```
+
+### What The First Start Creates
+
+On a **fresh** cluster only, `db/initdb/10-appdb-seed.sh` creates the
+`APPDB_APP_USER` role and one database per `APPDB_DATABASES` entry, each owned by
+that role, each with `CONNECT` revoked from `PUBLIC`.
+
+"Fresh" means `./data/appdb/postgres` is empty. This is what makes a restore win
+over the seed: `./restore.sh` repopulates that directory, so the seed does not
+run and cannot overwrite recovered data.
+
+The consequences are worth stating plainly:
+
+- **Adding a name to `APPDB_DATABASES` later does nothing.** The cluster is no
+  longer empty. Create it by hand:
+  ```sh
+  podman exec -it appdb psql -U postgres -c 'CREATE DATABASE app3 OWNER appuser'
+  ```
+- **Changing `APPDB_APP_PASSWORD` later does not change the database.** `.env`
+  seeds; it does not reconcile. Rotate both sides:
+  ```sh
+  podman exec -it appdb psql -U postgres \
+    -c "ALTER ROLE appuser PASSWORD 'the-new-password'"
+  # then set the same value in .env and re-run ./install.sh
+  ```
+
+Database and role names must match `^[a-z_][a-z0-9_]{0,62}$`. They become SQL
+identifiers, which cannot be parameterized, so the seed rejects anything else
+rather than trying to quote it, and the container refuses to start.
+
+### Connect
+
+From any device on your tailnet:
+
+```sh
+tailscale ip -4                 # on the server: the address the database binds
+psql "postgresql://appuser@<tailscale-ip>:5432/app1"
+```
+
+A GUI client (DBeaver, TablePlus, DataGrip) uses the same values: host is the
+server's `100.x` tailscale address, port `5432`, user `APPDB_APP_USER`, password
+`APPDB_APP_PASSWORD`.
+
+Adminer: `http://<tailscale-ip>:8081`, pre-pointed at the `appdb` server.
+Adminer has no accounts of its own - the PostgreSQL credentials are the only
+authentication, which is why it lives behind the tailnet.
+
+From a container in this compose project, join `appdb-net` and use the service
+name. This never touches the published port:
+
+```yaml
+    environment:
+      - DATABASE_URL=postgres://appuser:${APPDB_APP_PASSWORD}@appdb:5432/app1
+    networks:
+      - appdb-net
+```
+
+### Verify
+
+```sh
+podman ps --filter name=appdb --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+ss -tlnp | grep 5432
+```
+
+The listening address must be the `100.x` tailscale address. **If you ever see
+`0.0.0.0:5432` or `*:5432`, stop and fix it** - the database is on your LAN.
+
+Confirm the negative case too, from a LAN host that is not on the tailnet:
+
+```sh
+nc -z -w3 <server-lan-ip> 5432 && echo "EXPOSED - investigate" || echo "not reachable from LAN, correct"
+```
+
+Check the dumps:
+
+```sh
+ls -lh ./data/appdb/db-dumps/
+podman exec appdb-dump /usr/local/bin/pg-dump.sh once
+```
+
+Expect `globals-latest.sql` plus one `<database>-latest.dump` per database.
+
+### Restore
+
+**Normal path** - the raw data directory, via the usual helper. It restores every
+service's data, keeps your current data aside, and honors the profiles in `.env`:
+
+```sh
+./restore.sh              # latest snapshot
+./restore.sh <id>         # a specific snapshot from `restic snapshots`
+```
+
+**Logical path** - when the raw data directory is damaged. The raw `PGDATA` is
+copied file-level while PostgreSQL may be writing, so it carries a torn-copy
+risk; the logical dumps do not. Load the globals first, or the databases will
+exist with nobody able to log in to them:
+
+```sh
+podman-compose -f docker-compose.yml --profile db down
+podman unshare rm -rf ./data/appdb/postgres
+mkdir -p ./data/appdb/postgres
+podman-compose -f docker-compose.yml --profile db up -d appdb
+# wait for it to accept connections
+podman exec -i appdb psql -U postgres < ./data/appdb/db-dumps/globals-latest.sql
+for db in app1 app2; do
+  podman exec -i appdb psql -U postgres -c "CREATE DATABASE $db OWNER appuser"
+  podman exec -i appdb pg_restore -U postgres -d "$db" \
+    < "./data/appdb/db-dumps/$db-latest.dump"
+done
+```
+
+Restoring the globals brings back role passwords as stored hashes, so
+applications keep working with the credentials already in their configuration.
+
+### Rollback
+
+```sh
+# in .env: remove `db` from LOCALCLOUD_PROFILES
+./install.sh
+```
+
+The installer stops the profile's containers. `./data/appdb` is left in place -
+delete it by hand once you are sure you want the data gone.

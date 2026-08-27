@@ -19,6 +19,7 @@ LocalCloud Stack is an installable self-hosted stack for private services on use
 | `dns-net` | AdGuard DNS/UI |
 | `mgmt-net` | Portainer and Podman socket access |
 | `db-net` | internal database traffic |
+| `appdb-net` | application database and Adminer; `internal: true`, no egress |
 | `tailscale0` | host interface for Tier B (Private) service binds via Tailscale |
 
 The backup container uses `network_mode: none`.
@@ -28,8 +29,8 @@ The backup container uses `network_mode: none`.
 Services follow the three-tier exposure model defined in [SECURITY.md](SECURITY.md):
 
 - **Tier A (Public)** - published through Cloudflare Tunnel with per-hostname Access policies: Gitea HTTP, n8n, Glances, Mattermost.
-- **Tier B (Private)** - reachable only through Tailscale, bound to the tailscale0 address: planned for PostgreSQL and the env store; Gitea SSH moves here from its LAN bind later.
-- **Tier C (Internal)** - never published: mattermost-postgres, backup (`network_mode: none`), Portainer (mgmt profile).
+- **Tier B (Private)** - reachable only through Tailscale, bound to the tailscale0 address: the `db` profile's PostgreSQL (`appdb`) and Adminer (`appdb-adminer`). Gitea SSH moves here from its LAN bind later.
+- **Tier C (Internal)** - never published: mattermost-postgres, appdb-dump, backup (`network_mode: none`), Portainer (mgmt profile).
 
 Current transitional binds: AdGuard binds DNS and UI to `LAN_IP`; Gitea SSH binds to `LAN_IP:GITEA_SSH_PORT` until the Tier B migration.
 
@@ -45,6 +46,7 @@ Important paths:
 - `./data/monitor`
 - `./data/portainer`
 - `./data/mattermost`
+- `./data/appdb`
 
 ## Backup Model
 
@@ -54,9 +56,10 @@ Flow:
 
 1. Verify the backup-volume marker exists when `BACKUP_REQUIRE_MOUNT=true`.
 2. When `chat` is enabled, write a logical Mattermost PostgreSQL dump to `./data/mattermost/db-dumps`.
-3. Initialize restic at `${RESTIC_REPOSITORY}` if needed.
-4. Snapshot `/sources`.
-5. Apply retention with daily, weekly, and monthly keep counts.
+3. When `db` is enabled, write `pg_dumpall --globals-only` plus one logical dump per application database to `./data/appdb/db-dumps`.
+4. Initialize restic at `${RESTIC_REPOSITORY}` if needed.
+5. Snapshot `/sources`.
+6. Apply retention with daily, weekly, and monthly keep counts.
 
 Backups are encrypted and versioned. The restic password must be stored separately from the backup disk.
 
@@ -77,6 +80,7 @@ Examples:
 - `LOCALCLOUD_PROFILES=dns` enables AdGuard.
 - `LOCALCLOUD_PROFILES=mgmt` enables Portainer.
 - `LOCALCLOUD_PROFILES=chat` enables Mattermost + PostgreSQL + logical dumps.
+- `LOCALCLOUD_PROFILES=db` enables the application database (PostgreSQL + Adminer + logical dumps). Requires the Tailscale transport.
 - `LOCALCLOUD_PROFILES=dns,chat` enables multiple profiles.
 
 After editing `.env`, rerun `./install.sh` so the generated systemd user service matches the selected profiles.
