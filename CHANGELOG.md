@@ -48,6 +48,18 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- Generated systemd user unit no longer quotes `WorkingDirectory`. systemd does
+  not strip quotes from that directive, so the quoted path was not absolute and
+  systemd >= 253 rejected the whole unit with "has a bad unit file setting".
+  The reference unit in `systemd/` had the same defect, and CI now rejects
+  quoted path directives.
+- `install.sh` fails closed when `LOCALCLOUD_PROFILES` is set but the installed
+  podman-compose has no `--profile` flag (added in 1.1.0; Ubuntu 24.04 ships
+  1.0.6). Previously the pre-start cleanup swallowed the resulting
+  `invalid choice: 'dns'` argparse error and the broken flags were still baked
+  into the systemd unit.
+- Installer surfaces real diagnostics (`systemctl status` + `journalctl`) when
+  the stack fails to start, instead of exiting on a bare systemd error line.
 - Backup mount guard now checks a marker file on the volume. The previous
   `mountpoint -q` check was defeated by the container bind-mount and never
   fired, so an unmounted disk could silently fill the host filesystem.

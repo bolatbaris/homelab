@@ -35,7 +35,7 @@ Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-sepa
 ## Requirements
 
 - Ubuntu Server
-- Podman and podman-compose
+- Podman and podman-compose (>= 1.1.0 when using `LOCALCLOUD_PROFILES`; older builds have no `--profile` flag)
 - Cloudflare account and Tunnel token
 - Static LAN IP for the server
 - USB or external disk for backups

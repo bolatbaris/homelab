@@ -66,6 +66,18 @@ normalize_profiles() {
   printf '%s' "$normalized"
 }
 
+# podman-compose only learned the global --profile flag in 1.1.0 (Ubuntu 24.04
+# ships 1.0.6). Older builds drop the unknown flag in argparse and then read the
+# profile name as the subcommand, so the real failure surfaces as the confusing
+# "argument command: invalid choice: 'dns'". Probe the capability rather than
+# parsing version strings.
+require_compose_profile_support() {
+  [ -n "$LOCALCLOUD_PROFILES" ] || return 0
+  if ! "$PODMAN_COMPOSE_BIN" --help 2>&1 | grep -q -- '--profile'; then
+    fail "$PODMAN_COMPOSE_BIN does not support --profile, but LOCALCLOUD_PROFILES='${LOCALCLOUD_PROFILES}' is set. Upgrade to podman-compose >= 1.1.0 (for example 'pipx install podman-compose') or clear LOCALCLOUD_PROFILES in .env."
+  fi
+}
+
 # True when LOCALCLOUD_PROFILES (comma-separated) contains the given profile.
 profile_enabled() {
   case ",${LOCALCLOUD_PROFILES}," in
@@ -157,6 +169,7 @@ for p in $(printf '%s' "$LOCALCLOUD_PROFILES" | tr ',' ' '); do
   fi
 done
 info "Enabled profiles: ${LOCALCLOUD_PROFILES:-none}"
+require_compose_profile_support
 
 # Per-profile required configuration.
 if profile_enabled mgmt; then require_env_value PODMAN_SOCKET_PATH; fi
@@ -228,6 +241,11 @@ info "Enabling rootless Podman socket and user service"
 loginctl enable-linger "$USER"
 systemctl --user enable --now podman.socket
 mkdir -p ~/.config/systemd/user
+# WorkingDirectory below is deliberately unquoted: systemd does not strip quotes
+# from that directive, and a leading quote makes the path non-absolute, which is
+# a fatal unit-file error on systemd >= 253 ("has a bad unit file setting").
+# ExecStart/ExecStop are quote-aware, so they keep their quotes and tolerate
+# spaces in the checkout path.
 cat > "$HOME/.config/systemd/user/$SERVICE_NAME" <<EOF
 [Unit]
 Description=LocalCloud Stack
@@ -237,7 +255,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory="$REPO_DIR"
+WorkingDirectory=$REPO_DIR
 ExecStart="$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE"$PROFILE_ARGS_STRING up -d
 ExecStop="$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE"$PROFILE_ARGS_STRING down
 Restart=on-failure
@@ -251,10 +269,24 @@ systemctl --user daemon-reload
 systemctl --user enable "$SERVICE_NAME"
 
 info "Stopping any existing LocalCloud containers before applying selected profiles"
-"$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat down --remove-orphans || true
+if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat down --remove-orphans; then
+  info "WARNING: pre-start cleanup exited non-zero (normal when nothing was running)."
+fi
+
+# Advisory: catches unit-file regressions before the restart hides them behind
+# a generic "bad unit file setting" message.
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if ! systemd-analyze --user verify "$HOME/.config/systemd/user/$SERVICE_NAME" 2>&1; then
+    info "WARNING: systemd-analyze reported issues with $SERVICE_NAME (see above)."
+  fi
+fi
 
 info "Starting stack through systemd user service"
-systemctl --user restart "$SERVICE_NAME"
+if ! systemctl --user restart "$SERVICE_NAME"; then
+  systemctl --user status "$SERVICE_NAME" --no-pager || true
+  journalctl --user -u "$SERVICE_NAME" -n 30 --no-pager || true
+  fail "Failed to start $SERVICE_NAME. Diagnostics above."
+fi
 
 if [ "$TAILSCALE_ENABLED" = "true" ]; then
   info "Tailscale Tier B transport active: confirm 'sudo ufw allow in on tailscale0' and least-privilege ACLs (docs/tailscale.md)."

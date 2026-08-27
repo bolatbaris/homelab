@@ -9,6 +9,24 @@ sudo apt update
 sudo apt install -y podman podman-compose git curl lm-sensors restic cryptsetup ufw
 ```
 
+Optional profiles need `--profile` support, which landed in podman-compose 1.1.0. Ubuntu 24.04 ships 1.0.6, so check and upgrade if `LOCALCLOUD_PROFILES` is not empty:
+
+```sh
+podman-compose --version
+podman-compose --help | grep -- --profile   # no output means no profile support
+```
+
+Upgrade path:
+
+```sh
+sudo apt remove -y podman-compose
+sudo apt install -y pipx && pipx ensurepath
+pipx install podman-compose
+exec "$SHELL" -l
+```
+
+`install.sh` fails closed with an explicit message when profiles are configured but the installed podman-compose cannot handle them.
+
 ## 2. Clone And Prepare
 
 ```sh
