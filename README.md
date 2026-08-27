@@ -130,6 +130,8 @@ Restore the latest snapshot and bring the stack back up:
 ./restore.sh <id>       # a specific snapshot from `restic snapshots`
 ```
 
+If the backup disk is LUKS-encrypted, it does not unlock itself after a power cut, and the nightly backup aborts until someone unlocks it by hand. `./backup-autounlock.sh --device /dev/sdX1` configures boot-time unlock; `--rollback` undoes it. The installer never configures this, because the keyfile lives on the host root disk and that changes what the disk encryption protects against - see [deployment.md section 12](deployment.md).
+
 `restore.sh` restores through Podman's user namespace so file ownership matches what the rootless containers expect, uses the profiles configured in `.env`, and moves your current `./data/<svc>` aside (`*.pre-restore-*`) instead of deleting it. See [deployment.md](deployment.md) for the full disaster-recovery walkthrough.
 
 ## Documentation

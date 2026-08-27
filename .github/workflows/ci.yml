@@ -14,13 +14,14 @@ jobs:
         run: |
           bash -n install.sh
           bash -n restore.sh
+          bash -n backup-autounlock.sh
           bash -n run.sh
           sh -n backup/backup.sh
           sh -n backup/mattermost-db-dump.sh
 
       - name: ShellCheck (advisory)
         continue-on-error: true
-        run: shellcheck install.sh restore.sh run.sh backup/backup.sh backup/mattermost-db-dump.sh
+        run: shellcheck install.sh restore.sh run.sh backup-autounlock.sh backup/backup.sh backup/mattermost-db-dump.sh
 
       - name: Validate Compose config
         run: |

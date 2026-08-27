@@ -369,113 +369,87 @@ podman logs backup 2>&1 | tail -20
 The forced run confirms the restic repository is reachable again. Expect
 `Backup finished OK.` on the last line.
 
-### Unattended Unlock (Optional, Manual Setup)
+### Unattended Unlock
 
-`install.sh` never configures this. It is an operator decision, because it
-changes what the disk encryption protects against.
+`./backup-autounlock.sh` configures the backup disk to unlock and mount itself
+at boot, so the nightly backup survives a power cut with nobody present.
 
-**The trade.** A keyfile on the host root disk lets the backup disk unlock
-itself at boot, so backups survive a power cut with nobody present. The
-encryption still protects a backup disk that is lost, sold, returned under
-warranty, or stolen on its own. It stops protecting anything once the whole
-machine is taken, because the key travels with it. Choose this when the server
-sits somewhere physically controlled and the realistic risk is the disk leaving
-the building alone. Keep the manual unlock when the machine itself could walk.
+`install.sh` never calls it. Adding a LUKS key slot and editing `/etc/crypttab`
+and `/etc/fstab` are host-level changes, and they change what the disk
+encryption protects against, so they stay an explicit decision.
 
-Encrypting the host root disk as well restores most of that protection, since
-the keyfile is then only readable on a booted, unlocked system.
+**The trade.** The keyfile lives on the host root disk. The backup disk stays
+protected if it is lost, sold, returned under warranty, or stolen on its own,
+and stops protecting anything once the whole machine is taken, because the key
+travels with it. Choose this when the server sits somewhere physically
+controlled and the realistic risk is the disk leaving the building alone. Keep
+the manual unlock when the machine itself could walk. Encrypting the host root
+disk as well restores most of that protection, since the keyfile is then only
+readable on a booted, unlocked system.
 
-**Setup.** Replace `/dev/sdX1` with the backup partition throughout.
-
-1. Generate a keyfile readable only by root:
-
-   ```sh
-   sudo dd if=/dev/urandom of=/etc/localcloud-backup.key bs=512 count=8
-   sudo chown root:root /etc/localcloud-backup.key
-   sudo chmod 400 /etc/localcloud-backup.key
-   ```
-
-2. Add it as an additional LUKS key. This does **not** replace the passphrase,
-   and it must not: the passphrase stays as the recovery path if the keyfile is
-   ever lost or the root filesystem is rebuilt.
-
-   ```sh
-   sudo cryptsetup luksAddKey /dev/sdX1 /etc/localcloud-backup.key
-   sudo cryptsetup luksDump /dev/sdX1 | grep -A1 Keyslots
-   ```
-
-   Two populated key slots is the expected result.
-
-3. Back up the LUKS header before relying on any of this. A damaged header makes
-   every snapshot unrecoverable regardless of passwords:
-
-   ```sh
-   sudo cryptsetup luksHeaderBackup /dev/sdX1 \
-        --header-backup-file ~/localcloud-luks-header.img
-   ```
-
-   Store that file off the machine, next to `RESTIC_PASSWORD` and
-   `N8N_ENCRYPTION_KEY`.
-
-4. Add the mapping to `/etc/crypttab`, keyed by UUID so a changed device name
-   cannot point it at the wrong disk:
-
-   ```sh
-   sudo blkid -s UUID -o value /dev/sdX1
-   ```
-
-   ```
-   localcloud-backup UUID=<uuid-from-above> /etc/localcloud-backup.key luks,nofail
-   ```
-
-5. Add the filesystem to `/etc/fstab`:
-
-   ```
-   /dev/mapper/localcloud-backup /mnt/usb-disk ext4 defaults,nofail,x-systemd.device-timeout=30 0 2
-   ```
-
-   `nofail` in both files is not optional. Without it, a disk that is absent,
-   dead, or unplugged blocks boot on a machine you may only reach over the
-   network - trading a stopped backup for an unreachable server.
-
-6. Test before trusting it, without rebooting:
-
-   ```sh
-   sudo umount /mnt/usb-disk
-   sudo cryptsetup close localcloud-backup
-   sudo systemctl daemon-reload
-   sudo cryptdisks_start localcloud-backup
-   sudo mount -a
-   mountpoint -q /mnt/usb-disk && ls -l /mnt/usb-disk/.localcloud-backup-volume
-   ```
-
-7. Then test the real path, because step 6 does not exercise boot ordering:
-
-   ```sh
-   sudo reboot
-   ```
-
-   After it comes back:
-
-   ```sh
-   mountpoint -q /mnt/usb-disk && echo "auto-unlock works"
-   podman logs backup 2>&1 | tail -20
-   ```
-
-   The mount happens during early boot, well before the lingering user session
-   starts the stack, so the backup container sees the real disk and no restart
-   is needed - unlike the manual remount above.
-
-**Rollback.** Remove the `/etc/crypttab` and `/etc/fstab` lines, then drop the
-key slot and destroy the keyfile:
+**Run it:**
 
 ```sh
-sudo cryptsetup luksRemoveKey /dev/sdX1 /etc/localcloud-backup.key
-sudo shred -u /etc/localcloud-backup.key
-sudo systemctl daemon-reload
+lsblk -f                                        # find the LUKS partition
+./backup-autounlock.sh --device /dev/sdX1
 ```
 
-Verify the passphrase still opens the disk before removing anything.
+Pass the encrypted partition, not the `/dev/mapper/...` name and not the
+filesystem. The script refuses anything that is not a LUKS device.
+
+What it does, in order:
+
+1. Creates `/etc/localcloud-backup.key` from `/dev/urandom`, root-owned and
+   mode `400`. An existing keyfile is reused.
+2. Backs up the LUKS header to your home directory **before** touching it. Copy
+   that file off the machine: a damaged header makes every snapshot
+   unrecoverable regardless of passwords.
+3. Adds the keyfile as an **additional** key slot, prompting for your existing
+   passphrase. The passphrase is kept - it is the recovery path if the keyfile
+   is lost or the root filesystem is rebuilt. The step is skipped when the
+   keyfile already opens the device, so re-running is safe.
+4. Adds a `/etc/crypttab` entry keyed by UUID, so a renamed device cannot point
+   at the wrong disk.
+5. Adds an `/etc/fstab` entry with the detected filesystem type.
+6. Tests the unlock path, unless the disk is already mounted.
+
+Both table entries use `nofail`, and the `fstab` entry adds
+`x-systemd.device-timeout=30`. That is not optional: without it a disk that is
+absent, dead, or unplugged blocks boot on a machine you may only reach over the
+network - trading a stopped backup for an unreachable server.
+
+**Verify with a real reboot.** The script's own test does not exercise boot
+ordering:
+
+```sh
+sudo reboot
+```
+
+then:
+
+```sh
+mountpoint -q /mnt/usb-disk && echo "auto-unlock works"
+podman logs backup 2>&1 | tail -20
+```
+
+The mount happens in early boot, before the lingering user session starts the
+stack, so the backup container sees the real disk - no `podman restart backup`
+needed, unlike the manual remount above.
+
+**Rollback:**
+
+```sh
+./backup-autounlock.sh --device /dev/sdX1 --rollback
+```
+
+That removes the `crypttab` and `fstab` entries, drops the keyfile's key slot,
+and destroys the keyfile. It refuses to run if the device has fewer than two
+enabled key slots, so it cannot lock you out. Confirm your passphrase still
+works afterwards:
+
+```sh
+sudo cryptsetup open /dev/sdX1 localcloud-backup
+```
 
 **Unchanged either way.** `RESTIC_PASSWORD` and `N8N_ENCRYPTION_KEY` still must
 live off the backup disk. Disk encryption protects the disk at rest; it is not

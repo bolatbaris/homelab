@@ -6,12 +6,17 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- `backup-autounlock.sh` - configures the LUKS backup disk to unlock and mount
+  itself at boot, so backups survive a power cut with nobody present. Backs up
+  the LUKS header first, adds the keyfile as an additional slot while keeping
+  the existing passphrase, writes UUID-keyed `crypttab` and `fstab` entries with
+  `nofail`, and is idempotent. `--rollback` reverses it and refuses to run if
+  that would leave fewer than two key slots. `install.sh` never calls it: the
+  keyfile lives on the host root disk, which changes what the disk encryption
+  protects against, so it stays an explicit operator decision. The installer
+  does note when the backup path is absent from `/etc/fstab`.
 - Deployment runbook section on power loss and unattended restart: what returns
-  on its own, what does not (the LUKS backup disk), the post-outage verification
-  checklist, and a full manual procedure for unattended LUKS unlock - keyfile,
-  `luksAddKey`, header backup, `nofail` entries in `crypttab`/`fstab`, a
-  reboot test, and rollback. The installer never configures it; the threat-model
-  trade-off is stated so the choice stays with the operator.
+  on its own, what does not, and the post-outage verification checklist.
 - Documented that a backup disk mounted while the stack is already running needs
   `podman restart backup`, because Podman resolves the bind mount at container
   creation and does not follow a host mount that appears afterwards.

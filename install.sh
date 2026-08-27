@@ -253,6 +253,18 @@ elif [ "$BACKUP_REQUIRE_MOUNT" = "true" ]; then
   fail "$BACKUP_DEST_PATH is not mounted. Mount it before installing because BACKUP_REQUIRE_MOUNT=true."
 fi
 
+# A LUKS backup disk unlocked by hand does not come back after a power cut, and
+# the nightly backup then aborts every night until someone notices. Advisory
+# only: configuring boot-time unlock changes what the disk encryption protects
+# against, so it stays an explicit operator decision (./backup-autounlock.sh).
+case "$BACKUP_DEST_PATH" in
+  /*)
+    if ! grep -qE "[[:space:]]${BACKUP_DEST_PATH%/}[[:space:]]" /etc/fstab 2>/dev/null; then
+      info "NOTE: $BACKUP_DEST_PATH is not in /etc/fstab, so it will not remount itself after a reboot or power cut, and scheduled backups will abort until it is unlocked by hand. Run ./backup-autounlock.sh --device <luks-partition> to make that automatic (deployment.md section 12)."
+    fi
+    ;;
+esac
+
 info "Enabling rootless Podman socket and user service"
 loginctl enable-linger "$USER"
 systemctl --user enable --now podman.socket
