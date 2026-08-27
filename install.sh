@@ -106,6 +106,13 @@ check_tailscale() {
     fail "TAILSCALE_IP='$TAILSCALE_IP' does not match the detected tailscale0 address '$detected'."
   fi
   TAILSCALE_IP="$detected"
+  # tailscaled is a system unit outside this installer's control, but if it is
+  # not enabled at boot then remote access does not come back after a power cut
+  # -- the one moment it is needed most. Warn rather than fail: the unit name
+  # and state are the host's business, not the stack's.
+  if ! systemctl is-enabled --quiet tailscaled 2>/dev/null; then
+    info "WARNING: tailscaled is not enabled at boot. Remote access will not return after a reboot or power cut. Fix with: sudo systemctl enable --now tailscaled"
+  fi
   info "Private (Tier B) transport enabled; tailscale0 address ${TAILSCALE_IP}"
 }
 

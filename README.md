@@ -64,6 +64,8 @@ Minimum required `.env` values:
 - `RESTIC_PASSWORD`
 - `BACKUP_DEST_PATH`
 
+Enable the Private (Tier B) transport with `TAILSCALE_ENABLED=true` after installing Tailscale on the host (see [deployment.md section 13](deployment.md)); `install.sh` detects the tailscale0 address and writes it to `TAILSCALE_IP`.
+
 Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). Valid values are `dns`, `mgmt`, and `chat`; invalid values fail the installer. `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` and `MATTERMOST_SUBDOMAIN` are required only for the `chat` profile.
 
 Generate secrets:
@@ -132,7 +134,7 @@ Restore the latest snapshot and bring the stack back up:
 
 ## Documentation
 
-- [Deployment Runbook](deployment.md)
+- [Deployment Runbook](deployment.md) - install, restore, wedged-stack recovery, power-loss checklist, and the Private tier
 - [Architecture](architecture.md)
 - [Security Baseline](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)

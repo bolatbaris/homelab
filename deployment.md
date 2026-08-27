@@ -97,7 +97,7 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. The `tailscale0` rule (`sudo ufw allow in on tailscale0`) is only needed once the Private tier transport is installed - see section 12. Drop the rules for services you do not run.
+The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. The `tailscale0` rule (`sudo ufw allow in on tailscale0`) is only needed once the Private tier transport is installed - see section 13. Drop the rules for services you do not run.
 
 ## 5. Encrypted Backup Disk
 
@@ -313,7 +313,65 @@ Install `dbus-user-session` (see section 1) and log out and back in to fix the
 cause. The stack itself no longer gates startup on health state, so a missing
 timer costs visibility, not availability.
 
-## 12. Private Tier (Tailscale)
+## 12. Power Loss And Unattended Restart
+
+What comes back on its own after the machine loses power:
+
+| Component | Mechanism |
+|---|---|
+| the stack | `loginctl enable-linger` plus the enabled `localcloud.service` (`WantedBy=default.target`) |
+| individual containers | `restart: unless-stopped` in `docker-compose.yml` |
+| rootless Podman socket | `systemctl --user enable podman.socket` |
+| AdGuard host resolver | `/etc/resolv.conf` is a plain file and `/etc/sysctl.d/99-localcloud-rootless-ports.conf` persists |
+| host DNS if AdGuard is down | `/etc/resolv.conf` points at 1.1.1.1, not at AdGuard, so the host still resolves |
+| Tailscale | `tailscaled` is a system unit; confirm with `systemctl is-enabled tailscaled` |
+
+What does **not** come back on its own:
+
+- **The LUKS backup disk.** `cryptsetup open` and `mount` are manual, so after an
+  outage `${BACKUP_DEST_PATH}` is unmounted, the volume marker is missing, and
+  every nightly backup aborts until someone unlocks it by hand. Decide
+  deliberately between an unattended unlock and a manual one - see below.
+
+Verify after any outage:
+
+```sh
+systemctl --user status localcloud.service --no-pager
+podman ps --format "table {{.Names}}\t{{.Status}}"
+mountpoint -q /mnt/usb-disk && echo "backup disk mounted" || echo "BACKUP DISK NOT MOUNTED"
+systemctl is-enabled tailscaled
+podman logs backup 2>&1 | tail -20
+```
+
+The last command matters: `backup.sh` writes its aborts to the container's
+stdout, so a stack whose backups have been failing every night says so there.
+
+### Remounting The Backup Disk
+
+```sh
+sudo cryptsetup open /dev/sdX1 localcloud-backup
+sudo mount /dev/mapper/localcloud-backup /mnt/usb-disk
+mountpoint -q /mnt/usb-disk && ls -l /mnt/usb-disk/.localcloud-backup-volume
+```
+
+Then force one run to confirm the repository is reachable again:
+
+```sh
+podman exec backup /usr/local/bin/backup.sh
+```
+
+### Unattended Unlock
+
+Unlocking automatically at boot means storing a LUKS keyfile on the host root
+disk and referencing it from `/etc/crypttab`. That keeps backups running through
+an outage without anyone present, and it is the right trade when the threat you
+are defending against is a lost or stolen backup disk. It is the wrong trade
+when the threat is a stolen server, because the key travels with the machine.
+
+This repository does not configure it either way: the choice depends on where
+the hardware lives.
+
+## 13. Private Tier (Tailscale)
 
 Optional. Enables the Private (Tier B) exposure tier - see [SECURITY.md](SECURITY.md) for the policy and [docs/tailscale.md](docs/tailscale.md) for the design.
 

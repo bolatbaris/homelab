@@ -6,6 +6,9 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- Deployment runbook section on power loss and unattended restart: what returns
+  on its own, what does not (the LUKS backup disk), the post-outage verification
+  checklist, and the trade-off behind an unattended LUKS unlock.
 - Open-source release as **LocalCloud Stack** under the MIT license.
 - `install.sh` validated installer (fail-closed secret checks; generates the
   user systemd unit for the actual checkout path). `run.sh` kept as a
@@ -48,6 +51,14 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- Backup failures are visible again. `backup.sh` wrote aborts only to a log file
+  inside the container, which cron also captured and which disappears when the
+  container is recreated, so a stack whose nightly backup had been aborting said
+  nothing. Both aborts and run progress now also go to the container's stdout,
+  where `podman logs backup` shows them.
+- The installer warns when `TAILSCALE_ENABLED=true` but `tailscaled` is not
+  enabled at boot, since remote access would otherwise not return after a power
+  cut.
 - Mattermost and its dump sidecar order on `depends_on` alone instead of
   `condition: service_healthy`. Podman runs healthchecks as systemd user timers;
   when that timer cannot be created the health state stays `starting` forever,
