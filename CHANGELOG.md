@@ -48,6 +48,12 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- Mattermost and its dump sidecar order on `depends_on` alone instead of
+  `condition: service_healthy`. Podman runs healthchecks as systemd user timers;
+  when that timer cannot be created the health state stays `starting` forever,
+  so a health-gated dependency blocked `up -d` until the unit's start timeout
+  even though PostgreSQL was accepting connections the whole time. The
+  healthcheck is kept for visibility and manual runs.
 - Generated systemd unit bounds its restart loop (`StartLimitBurst=3`) and gets
   `TimeoutStopSec=300`. A failing start previously retried indefinitely, and
   every retry SIGKILLed the unit cgroup including each container's `conmon`,

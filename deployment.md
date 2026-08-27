@@ -6,7 +6,7 @@ This runbook targets Ubuntu Server with rootless Podman. Run commands as the non
 
 ```sh
 sudo apt update
-sudo apt install -y podman podman-compose git curl lm-sensors restic cryptsetup ufw
+sudo apt install -y podman podman-compose git curl lm-sensors restic cryptsetup ufw dbus-user-session
 ```
 
 Optional profiles need `--profile` support, which landed in podman-compose 1.1.0. Ubuntu 24.04 ships 1.0.6, so check and upgrade if `LOCALCLOUD_PROFILES` is not empty:
@@ -285,6 +285,33 @@ podman network rm homelab_edge-net homelab_dns-net homelab_mgmt-net homelab_db-n
 ```
 
 No data is at risk during any of this: all persistent state lives under `./data`.
+
+### Containers Stuck In `starting` Health
+
+Podman implements container healthchecks as systemd **user timers**. When it
+cannot reach the user systemd manager - the symptom is
+`dial unix /run/user/1000/systemd/private: connect: connection refused`, usually
+a missing user DBus session - the timer is never created, the health state stays
+`starting` indefinitely, and anything gated on it waits forever.
+
+Confirm with:
+
+```sh
+podman inspect <container> --format '{{.State.Health.Status}}'
+podman inspect <container> --format '{{json .State.Health.Log}}'
+systemctl --user list-timers --all | grep -i health
+```
+
+An empty `Health.Log` plus no healthcheck timer means the timer never ran; the
+service itself is probably fine. Nudge it once by hand:
+
+```sh
+podman healthcheck run <container>
+```
+
+Install `dbus-user-session` (see section 1) and log out and back in to fix the
+cause. The stack itself no longer gates startup on health state, so a missing
+timer costs visibility, not availability.
 
 ## 12. Private Tier (Tailscale)
 
