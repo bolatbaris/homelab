@@ -182,7 +182,11 @@ fi
 info "Creating private data directories"
 mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
          ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps}
-chmod -R go-rwx ./data
+# Privacy boundary: only the host user may traverse ./data at all. Files inside
+# are additionally isolated by rootless Podman subuid mapping, which no other
+# host user shares - so a recursive host chmod is unnecessary and would fail on
+# subuid-owned files from an existing install.
+chmod go-rwx ./data ./data/*
 
 info "Fixing rootless Podman bind-mount ownership"
 podman unshare chown -R 1000:1000 ./data/n8n
