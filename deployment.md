@@ -249,7 +249,16 @@ Anything still listed by `podman ps -a --filter status=stopping` needs Podman's
 cleanup handler run by hand before it can be removed:
 
 ```sh
-podman container cleanup --force <name>
+podman container cleanup --rm <name>
+```
+
+`cleanup` runs the teardown the dead `conmon` never finished, and `--rm` removes
+the container once that succeeds. If it still refuses, an orphaned helper process
+is holding the container; find and kill it, then retry:
+
+```sh
+pgrep -af 'conmon|rootlessport' | grep <container-id>
+kill -9 <pid>
 podman rm -f <name>
 ```
 
