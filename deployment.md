@@ -254,13 +254,26 @@ podman container cleanup --rm <name>
 
 `cleanup` runs the teardown the dead `conmon` never finished, and `--rm` removes
 the container once that succeeds. If it still refuses, an orphaned helper process
-is holding the container; find and kill it, then retry:
+may be holding the container; find and kill it, then retry:
 
 ```sh
-pgrep -af 'conmon|rootlessport' | grep <container-id>
+pgrep -af 'conmon|rootlessport|catatonit'
 kill -9 <pid>
 podman rm -f <name>
 ```
+
+When every removal path still reports `container state improper`, the state is
+stuck in Podman's database: Podman is waiting for an exit notification from a
+`conmon` that no longer exists. Podman stores container state together with the
+boot ID and refreshes all of it when the boot ID changes, so **a reboot is the
+supported way out**, not a workaround. `podman system migrate` triggers the same
+refresh without rebooting, but it stops every container this user owns - so on a
+host running unrelated containers it costs the same as a reboot with less
+certainty.
+
+Pull the latest checkout before rebooting, because lingering starts the service
+again at boot, and re-run `./install.sh` afterwards: the ownership mapping and
+the image pre-pull only happen in the installer, not in the unit.
 
 Then clear the leftover pod and networks and re-run the installer:
 
@@ -271,8 +284,7 @@ podman network rm homelab_edge-net homelab_dns-net homelab_mgmt-net homelab_db-n
 ./install.sh
 ```
 
-A reboot is a safe last resort: all state lives under `./data`. Pull the latest
-checkout first, because lingering restarts the service automatically at boot.
+No data is at risk during any of this: all persistent state lives under `./data`.
 
 ## 12. Private Tier (Tailscale)
 
