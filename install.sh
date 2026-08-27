@@ -51,9 +51,9 @@ normalize_profiles() {
 
   for profile in $(printf '%s' "$raw" | tr ',' ' '); do
     case "$profile" in
-      dns|mgmt|chat) ;;
+      dns|mgmt|chat|db) ;;
       *)
-        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat."
+        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, db."
         ;;
     esac
 
@@ -75,6 +75,32 @@ require_compose_profile_support() {
   [ -n "$LOCALCLOUD_PROFILES" ] || return 0
   if ! "$PODMAN_COMPOSE_BIN" --help 2>&1 | grep -q -- '--profile'; then
     fail "$PODMAN_COMPOSE_BIN does not support --profile, but LOCALCLOUD_PROFILES='${LOCALCLOUD_PROFILES}' is set. Upgrade to podman-compose >= 1.1.0 (for example 'pipx install podman-compose') or clear LOCALCLOUD_PROFILES in .env."
+  fi
+}
+
+# The db profile's port mapping uses the required-variable form
+# "${TAILSCALE_IP:?...}" so that an empty value is a hard failure instead of a
+# bind on every interface. A podman-compose that does not implement that form
+# would substitute empty and silently disarm the guard -- the mapping would look
+# correct in the file while protecting nothing. Probe for it the same way
+# profile support is probed, rather than comparing version strings.
+require_compose_required_var_support() {
+  profile_enabled db || return 0
+  local probe rendered
+  probe="$(mktemp -d)"
+  cat > "$probe/docker-compose.yml" <<'PROBE'
+services:
+  probe:
+    image: localhost/localcloud-probe
+    ports:
+      - "${LOCALCLOUD_PROBE_UNSET:?required}:1:1"
+PROBE
+  : > "$probe/.env"
+  rendered=0
+  ( cd "$probe" && LOCALCLOUD_PROBE_UNSET= "$PODMAN_COMPOSE_BIN" -f docker-compose.yml config ) >/dev/null 2>&1 && rendered=1
+  rm -rf "$probe"
+  if [ "$rendered" -eq 1 ]; then
+    fail "$PODMAN_COMPOSE_BIN does not implement the \${VAR:?message} form, so the db profile's Tailscale-only bind guard would silently fall back to binding every interface. Upgrade podman-compose (for example 'pipx install podman-compose') or remove 'db' from LOCALCLOUD_PROFILES."
   fi
 }
 
@@ -186,6 +212,20 @@ if profile_enabled chat; then
   require_env_value MATTERMOST_DB_PASSWORD
   require_env_value MATTERMOST_SUBDOMAIN
 fi
+if profile_enabled db; then
+  # Tier B is defined by its transport. Without Tailscale there is no address to
+  # bind to, and the compose mapping would fall back to every interface -- which
+  # is exactly the exposure this tier exists to prevent. Fail before anything
+  # starts, and name the fix rather than only the symptom.
+  if [ "$TAILSCALE_ENABLED" != "true" ]; then
+    fail "LOCALCLOUD_PROFILES includes 'db', but TAILSCALE_ENABLED is not 'true'. The application database is a Private (Tier B) service: it is reachable only over Tailscale and must never be published to the LAN or through Cloudflare. Complete deployment.md section 13 (Private Tier), set TAILSCALE_ENABLED=true, then run ./install.sh again."
+  fi
+  require_env_value APPDB_SUPERUSER_PASSWORD
+  require_env_value APPDB_APP_USER
+  require_env_value APPDB_APP_PASSWORD
+  require_env_value APPDB_DATABASES
+  require_compose_required_var_support
+fi
 
 check_tailscale
 
@@ -203,7 +243,8 @@ fi
 
 info "Creating private data directories"
 mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
-         ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps}
+         ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps} \
+         ./data/appdb/{postgres,db-dumps}
 # Privacy boundary: ./data itself is host-user owned and 0700, so no other
 # host user can traverse it. Individual top-level dirs may be owned by
 # rootless Podman subuids on migrated installs - uid isolation already covers
@@ -306,8 +347,16 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable "$SERVICE_NAME"
 
+# Naming every profile here is what stops a just-disabled optional service from
+# staying up. The db profile is only named once an address is known, because
+# rendering it without one trips its own bind guard -- correct behavior, but a
+# confusing way for a teardown to fail.
+CLEANUP_PROFILE_ARGS=(--profile dns --profile mgmt --profile chat)
+if [ -n "$TAILSCALE_IP" ]; then
+  CLEANUP_PROFILE_ARGS+=(--profile db)
+fi
 info "Stopping any existing LocalCloud containers before applying selected profiles"
-if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat down --remove-orphans; then
+if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" "${CLEANUP_PROFILE_ARGS[@]}" down --remove-orphans; then
   info "WARNING: pre-start cleanup exited non-zero (normal when nothing was running)."
 fi
 
