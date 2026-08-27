@@ -77,13 +77,14 @@ not by remembering not to click something.
 
 `internal: true` removes egress. None of the three services need it.
 
-**Verification owed at implementation time.** The repo has no precedent for
-publishing a host port from a container on an `internal: true` network
-(`mattermost-postgres` is internal but publishes nothing). Rootless port
-publishing goes through `rootlessport`, and its behavior on an internal network
-must be confirmed empirically before the design is considered settled. If it
-does not work, the fallback is a non-internal `appdb-net` with egress denied at
-the host firewall, reported as a finding rather than silently substituted.
+**Verified 2026-08-28** (Podman 5.8.3, rootless, netavark). The repo had no
+precedent for publishing a host port from a container on an `internal: true`
+network — `mattermost-postgres` is internal but publishes nothing — so this was
+measured rather than assumed. A probe service on an `internal: true` bridge
+published `127.0.0.1:15432` and answered `HTTP 200` from the host, while an
+outbound `connect()` to `1.1.1.1:443` from inside that container failed with
+`OSError`. Both properties hold at once: the host reaches in, the container
+cannot reach out. No fallback needed.
 
 ### Fail-Closed Exposure Guard
 
@@ -101,6 +102,16 @@ ports:
 
 Any `podman-compose` invocation — including one typed by hand, bypassing the
 installer — fails with that message rather than binding wide.
+
+**Verified 2026-08-28** on podman-compose 1.6.0: an empty `TAILSCALE_IP` exits
+`1` and prints the message; a set one renders `100.64.0.1:5432:5432`.
+
+The version floor for this substitution form is not known, however. The repo
+already requires podman-compose >= 1.1.0 for `--profile`, and older builds may
+substitute empty instead of failing — which would silently disarm layer 1 on
+exactly the Ubuntu-packaged versions the installer already works around.
+`install.sh` therefore probes the capability the same way
+`require_compose_profile_support` does, rather than parsing a version string.
 
 **Layer 2 — installer.** When `LOCALCLOUD_PROFILES` contains `db`,
 `install.sh` requires `TAILSCALE_ENABLED=true` and fails before any container
@@ -315,7 +326,8 @@ Manual, on the target host, recorded in `deployment.md` section 14:
 
 | Risk | Handling |
 |---|---|
-| Published port from an `internal: true` network may not work rootless | Verified empirically during implementation; documented fallback |
+| Published port from an `internal: true` network may not work rootless | Resolved: verified working on Podman 5.8.3 rootless/netavark, with egress still blocked |
+| Older podman-compose may ignore `${VAR:?}` and disarm layer 1 | `install.sh` probes the capability, in the idiom of `require_compose_profile_support` |
 | Generalizing the dump script could regress Mattermost backups | `.env` keys preserved; `DB_DUMP_ALL=false` path is behavior-identical; manual verification listed above |
 | Operator enables `db` without Tailscale | Three independent fail-closed layers |
 | Raw `PGDATA` torn copy | Logical dumps are the documented recovery path |
