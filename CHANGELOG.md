@@ -8,7 +8,13 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ### Added
 - Deployment runbook section on power loss and unattended restart: what returns
   on its own, what does not (the LUKS backup disk), the post-outage verification
-  checklist, and the trade-off behind an unattended LUKS unlock.
+  checklist, and a full manual procedure for unattended LUKS unlock - keyfile,
+  `luksAddKey`, header backup, `nofail` entries in `crypttab`/`fstab`, a
+  reboot test, and rollback. The installer never configures it; the threat-model
+  trade-off is stated so the choice stays with the operator.
+- Documented that a backup disk mounted while the stack is already running needs
+  `podman restart backup`, because Podman resolves the bind mount at container
+  creation and does not follow a host mount that appears afterwards.
 - Open-source release as **LocalCloud Stack** under the MIT license.
 - `install.sh` validated installer (fail-closed secret checks; generates the
   user systemd unit for the actual checkout path). `run.sh` kept as a

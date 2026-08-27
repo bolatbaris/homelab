@@ -101,7 +101,13 @@ Backup coverage is independent of the exposure tier: Tier B and C data (database
 
 Production baseline:
 
-- LUKS-encrypted physical backup disk.
+- LUKS-encrypted physical backup disk. Unlocking is manual by default, so a
+  power cut stops backups until an operator unlocks the disk. Unattended unlock
+  via a root-owned keyfile and `/etc/crypttab` is documented in
+  [deployment.md section 12](deployment.md) and is never configured by the
+  installer: it keeps the disk protected when it leaves on its own, and stops
+  protecting anything once the whole machine is taken, so the choice belongs to
+  whoever knows where the hardware sits.
 - ext4 filesystem inside the unlocked LUKS volume.
 - `BACKUP_REQUIRE_MOUNT=true`.
 - Restore tested before storing important data.

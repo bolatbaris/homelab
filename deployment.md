@@ -354,22 +354,133 @@ sudo mount /dev/mapper/localcloud-backup /mnt/usb-disk
 mountpoint -q /mnt/usb-disk && ls -l /mnt/usb-disk/.localcloud-backup-volume
 ```
 
-Then force one run to confirm the repository is reachable again:
+**Restart the backup container afterwards.** Podman resolves a bind mount when
+the container is created, and the mount namespace does not follow a host mount
+that appears later. A backup container started while the disk was still locked
+keeps looking at the empty placeholder directory, so its marker check keeps
+failing even though the disk is now mounted:
 
 ```sh
+podman restart backup
 podman exec backup /usr/local/bin/backup.sh
+podman logs backup 2>&1 | tail -20
 ```
 
-### Unattended Unlock
+The forced run confirms the restic repository is reachable again. Expect
+`Backup finished OK.` on the last line.
 
-Unlocking automatically at boot means storing a LUKS keyfile on the host root
-disk and referencing it from `/etc/crypttab`. That keeps backups running through
-an outage without anyone present, and it is the right trade when the threat you
-are defending against is a lost or stolen backup disk. It is the wrong trade
-when the threat is a stolen server, because the key travels with the machine.
+### Unattended Unlock (Optional, Manual Setup)
 
-This repository does not configure it either way: the choice depends on where
-the hardware lives.
+`install.sh` never configures this. It is an operator decision, because it
+changes what the disk encryption protects against.
+
+**The trade.** A keyfile on the host root disk lets the backup disk unlock
+itself at boot, so backups survive a power cut with nobody present. The
+encryption still protects a backup disk that is lost, sold, returned under
+warranty, or stolen on its own. It stops protecting anything once the whole
+machine is taken, because the key travels with it. Choose this when the server
+sits somewhere physically controlled and the realistic risk is the disk leaving
+the building alone. Keep the manual unlock when the machine itself could walk.
+
+Encrypting the host root disk as well restores most of that protection, since
+the keyfile is then only readable on a booted, unlocked system.
+
+**Setup.** Replace `/dev/sdX1` with the backup partition throughout.
+
+1. Generate a keyfile readable only by root:
+
+   ```sh
+   sudo dd if=/dev/urandom of=/etc/localcloud-backup.key bs=512 count=8
+   sudo chown root:root /etc/localcloud-backup.key
+   sudo chmod 400 /etc/localcloud-backup.key
+   ```
+
+2. Add it as an additional LUKS key. This does **not** replace the passphrase,
+   and it must not: the passphrase stays as the recovery path if the keyfile is
+   ever lost or the root filesystem is rebuilt.
+
+   ```sh
+   sudo cryptsetup luksAddKey /dev/sdX1 /etc/localcloud-backup.key
+   sudo cryptsetup luksDump /dev/sdX1 | grep -A1 Keyslots
+   ```
+
+   Two populated key slots is the expected result.
+
+3. Back up the LUKS header before relying on any of this. A damaged header makes
+   every snapshot unrecoverable regardless of passwords:
+
+   ```sh
+   sudo cryptsetup luksHeaderBackup /dev/sdX1 \
+        --header-backup-file ~/localcloud-luks-header.img
+   ```
+
+   Store that file off the machine, next to `RESTIC_PASSWORD` and
+   `N8N_ENCRYPTION_KEY`.
+
+4. Add the mapping to `/etc/crypttab`, keyed by UUID so a changed device name
+   cannot point it at the wrong disk:
+
+   ```sh
+   sudo blkid -s UUID -o value /dev/sdX1
+   ```
+
+   ```
+   localcloud-backup UUID=<uuid-from-above> /etc/localcloud-backup.key luks,nofail
+   ```
+
+5. Add the filesystem to `/etc/fstab`:
+
+   ```
+   /dev/mapper/localcloud-backup /mnt/usb-disk ext4 defaults,nofail,x-systemd.device-timeout=30 0 2
+   ```
+
+   `nofail` in both files is not optional. Without it, a disk that is absent,
+   dead, or unplugged blocks boot on a machine you may only reach over the
+   network - trading a stopped backup for an unreachable server.
+
+6. Test before trusting it, without rebooting:
+
+   ```sh
+   sudo umount /mnt/usb-disk
+   sudo cryptsetup close localcloud-backup
+   sudo systemctl daemon-reload
+   sudo cryptdisks_start localcloud-backup
+   sudo mount -a
+   mountpoint -q /mnt/usb-disk && ls -l /mnt/usb-disk/.localcloud-backup-volume
+   ```
+
+7. Then test the real path, because step 6 does not exercise boot ordering:
+
+   ```sh
+   sudo reboot
+   ```
+
+   After it comes back:
+
+   ```sh
+   mountpoint -q /mnt/usb-disk && echo "auto-unlock works"
+   podman logs backup 2>&1 | tail -20
+   ```
+
+   The mount happens during early boot, well before the lingering user session
+   starts the stack, so the backup container sees the real disk and no restart
+   is needed - unlike the manual remount above.
+
+**Rollback.** Remove the `/etc/crypttab` and `/etc/fstab` lines, then drop the
+key slot and destroy the keyfile:
+
+```sh
+sudo cryptsetup luksRemoveKey /dev/sdX1 /etc/localcloud-backup.key
+sudo shred -u /etc/localcloud-backup.key
+sudo systemctl daemon-reload
+```
+
+Verify the passphrase still opens the disk before removing anything.
+
+**Unchanged either way.** `RESTIC_PASSWORD` and `N8N_ENCRYPTION_KEY` still must
+live off the backup disk. Disk encryption protects the disk at rest; it is not
+what makes the snapshots encrypted, and it is not a substitute for keeping those
+secrets somewhere else.
 
 ## 13. Private Tier (Tailscale)
 
