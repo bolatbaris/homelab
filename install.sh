@@ -256,11 +256,11 @@ fi
 # A LUKS backup disk unlocked by hand does not come back after a power cut, and
 # the nightly backup then aborts every night until someone notices. Advisory
 # only: configuring boot-time unlock changes what the disk encryption protects
-# against, so it stays an explicit operator decision (./backup-autounlock.sh).
+# against, so it stays an explicit operator decision (./backup-automount.sh).
 case "$BACKUP_DEST_PATH" in
   /*)
     if ! grep -qE "[[:space:]]${BACKUP_DEST_PATH%/}[[:space:]]" /etc/fstab 2>/dev/null; then
-      info "NOTE: $BACKUP_DEST_PATH is not in /etc/fstab, so it will not remount itself after a reboot or power cut, and scheduled backups will abort until it is unlocked by hand. Run ./backup-autounlock.sh --device <luks-partition> to make that automatic (deployment.md section 12)."
+      info "NOTE: $BACKUP_DEST_PATH is not in /etc/fstab, so it will not remount itself after a reboot or power cut, and scheduled backups will abort until it is unlocked by hand. Run ./backup-automount.sh --device <luks-partition> to make that automatic (deployment.md section 12)."
     fi
     ;;
 esac

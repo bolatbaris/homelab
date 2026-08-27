@@ -369,14 +369,37 @@ podman logs backup 2>&1 | tail -20
 The forced run confirms the restic repository is reachable again. Expect
 `Backup finished OK.` on the last line.
 
-### Unattended Unlock
+### Boot-Time Mounting
 
-`./backup-autounlock.sh` configures the backup disk to unlock and mount itself
-at boot, so the nightly backup survives a power cut with nobody present.
+`./backup-automount.sh` makes the backup disk mount itself at boot, so the
+nightly backup survives a power cut with nobody present. It handles both shapes
+of backup disk: a LUKS-encrypted one (keyfile, `crypttab`, `fstab`) and a plain
+filesystem (`fstab` only). Check which you have with `lsblk -f`: `FSTYPE`
+reads `crypto_LUKS` for an encrypted partition, or the filesystem itself
+(`ext4`, …) for a plain one.
 
-`install.sh` never calls it. Adding a LUKS key slot and editing `/etc/crypttab`
-and `/etc/fstab` are host-level changes, and they change what the disk
-encryption protects against, so they stay an explicit decision.
+```sh
+lsblk -f
+./backup-automount.sh --device /dev/sdc1
+```
+
+`--device` also accepts a path where the disk is already mounted
+(`/mnt/usb-disk`) and resolves it to the underlying partition.
+
+Either way the `fstab` entry is keyed by UUID rather than `/dev/sdX`, because
+device names are assigned in probe order and can move between boots.
+
+#### Plain, Unencrypted Backup Disk
+
+Only the `fstab` entry is written. Snapshots are still encrypted at rest by
+restic under `RESTIC_PASSWORD`, so an unencrypted disk does not mean unencrypted
+backups - disk encryption is a second layer, not the only one. What it adds is
+protection for the disk itself when it leaves your control.
+
+#### LUKS-Encrypted Backup Disk
+
+`install.sh` never calls it: editing `/etc/fstab` and adding a LUKS key slot are
+host-level changes that stay an explicit decision.
 
 **The trade.** The keyfile lives on the host root disk. The backup disk stays
 protected if it is lost, sold, returned under warranty, or stolen on its own,
@@ -387,15 +410,7 @@ the manual unlock when the machine itself could walk. Encrypting the host root
 disk as well restores most of that protection, since the keyfile is then only
 readable on a booted, unlocked system.
 
-**Run it:**
-
-```sh
-lsblk -f                                        # find the LUKS partition
-./backup-autounlock.sh --device /dev/sdX1
-```
-
-Pass the encrypted partition, not the `/dev/mapper/...` name and not the
-filesystem. The script refuses anything that is not a LUKS device.
+Pass the encrypted partition, not the `/dev/mapper/...` name.
 
 What it does, in order:
 
@@ -411,15 +426,16 @@ What it does, in order:
 4. Adds a `/etc/crypttab` entry keyed by UUID, so a renamed device cannot point
    at the wrong disk.
 5. Adds an `/etc/fstab` entry with the detected filesystem type.
-6. Tests the unlock path, unless the disk is already mounted.
+6. Tests the unlock and mount path, unless the disk is already mounted.
 
 Both table entries use `nofail`, and the `fstab` entry adds
 `x-systemd.device-timeout=30`. That is not optional: without it a disk that is
 absent, dead, or unplugged blocks boot on a machine you may only reach over the
 network - trading a stopped backup for an unreachable server.
 
-**Verify with a real reboot.** The script's own test does not exercise boot
-ordering:
+#### Verify With A Real Reboot
+
+The script's own test does not exercise boot ordering:
 
 ```sh
 sudo reboot
@@ -428,7 +444,7 @@ sudo reboot
 then:
 
 ```sh
-mountpoint -q /mnt/usb-disk && echo "auto-unlock works"
+mountpoint -q /mnt/usb-disk && echo "auto-mount works"
 podman logs backup 2>&1 | tail -20
 ```
 
@@ -436,16 +452,15 @@ The mount happens in early boot, before the lingering user session starts the
 stack, so the backup container sees the real disk - no `podman restart backup`
 needed, unlike the manual remount above.
 
-**Rollback:**
+#### Rollback
 
 ```sh
-./backup-autounlock.sh --device /dev/sdX1 --rollback
+./backup-automount.sh --device /dev/sdc1 --rollback
 ```
 
-That removes the `crypttab` and `fstab` entries, drops the keyfile's key slot,
-and destroys the keyfile. It refuses to run if the device has fewer than two
-enabled key slots, so it cannot lock you out. Confirm your passphrase still
-works afterwards:
+That removes the `fstab` entry, and for a LUKS disk also the `crypttab` entry,
+the key slot, and the keyfile. It keeps the key slot if the device has fewer
+than two enabled slots, so it cannot lock you out. For a LUKS disk, confirm your passphrase still works afterwards:
 
 ```sh
 sudo cryptsetup open /dev/sdX1 localcloud-backup

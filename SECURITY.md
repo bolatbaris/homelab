@@ -101,15 +101,18 @@ Backup coverage is independent of the exposure tier: Tier B and C data (database
 
 Production baseline:
 
-- LUKS-encrypted physical backup disk. Unlocking is manual by default, so a
-  power cut stops backups until an operator unlocks the disk.
-  `./backup-autounlock.sh` configures boot-time unlock via a root-owned keyfile
-  and `/etc/crypttab` ([deployment.md section 12](deployment.md)); `install.sh`
-  never runs it. The keyfile lives on the host root disk, so the disk stays
-  protected when it leaves on its own and stops protecting anything once the
-  whole machine is taken - the choice belongs to whoever knows where the
-  hardware sits. The script keeps the existing passphrase as a second key slot
-  and backs up the LUKS header first.
+- LUKS-encrypted physical backup disk. This is a second layer, not the only one:
+  restic already encrypts every snapshot under `RESTIC_PASSWORD`, so a plain
+  disk does not mean plain backups. What LUKS adds is protection for the disk
+  itself once it leaves your control.
+- Mounting is manual by default, so a power cut stops backups until an operator
+  notices. `./backup-automount.sh` configures boot-time mounting - `fstab` for a
+  plain disk, plus a root-owned keyfile and `/etc/crypttab` for a LUKS one
+  ([deployment.md section 12](deployment.md)). `install.sh` never runs it. For a
+  LUKS disk the keyfile lives on the host root disk, so the disk stays protected
+  when it leaves on its own and stops protecting anything once the whole machine
+  is taken; the script keeps the existing passphrase as a second key slot and
+  backs up the LUKS header first.
 - ext4 filesystem inside the unlocked LUKS volume.
 - `BACKUP_REQUIRE_MOUNT=true`.
 - Restore tested before storing important data.
