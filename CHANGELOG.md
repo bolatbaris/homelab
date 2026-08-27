@@ -6,6 +6,22 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- `backup-automount.sh` - makes the backup disk mount itself at boot, so backups
+  survive a power cut with nobody present. Handles a plain filesystem (a
+  UUID-keyed `fstab` entry) and a LUKS-encrypted disk (root-only keyfile, LUKS
+  header backup taken first, the keyfile added as an additional slot while the
+  existing passphrase is kept, plus a `crypttab` entry). Both table entries use
+  `nofail` so an absent or dead disk cannot block boot. Every step is
+  idempotent, a mounted path is accepted in place of the partition, and
+  `--rollback` reverses it while keeping the key slot if that would leave fewer
+  than two. `install.sh` never calls it - editing `/etc/fstab` and adding a LUKS
+  key slot are host-level decisions - but does note when the backup path is
+  absent from `/etc/fstab`.
+- Deployment runbook section on power loss and unattended restart: what returns
+  on its own, what does not, and the post-outage verification checklist.
+- Documented that a backup disk mounted while the stack is already running needs
+  `podman restart backup`, because Podman resolves the bind mount at container
+  creation and does not follow a host mount that appears afterwards.
 - Open-source release as **LocalCloud Stack** under the MIT license.
 - `install.sh` validated installer (fail-closed secret checks; generates the
   user systemd unit for the actual checkout path). `run.sh` kept as a
@@ -48,6 +64,46 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- Backup failures are visible again. `backup.sh` wrote aborts only to a log file
+  inside the container, which cron also captured and which disappears when the
+  container is recreated, so a stack whose nightly backup had been aborting said
+  nothing. Both aborts and run progress now also go to the container's stdout,
+  where `podman logs backup` shows them.
+- The installer warns when `TAILSCALE_ENABLED=true` but `tailscaled` is not
+  enabled at boot, since remote access would otherwise not return after a power
+  cut.
+- Mattermost and its dump sidecar order on `depends_on` alone instead of
+  `condition: service_healthy`. Podman runs healthchecks as systemd user timers;
+  when that timer cannot be created the health state stays `starting` forever,
+  so a health-gated dependency blocked `up -d` until the unit's start timeout
+  even though PostgreSQL was accepting connections the whole time. The
+  healthcheck is kept for visibility and manual runs.
+- Generated systemd unit bounds its restart loop (`StartLimitBurst=3`) and gets
+  `TimeoutStopSec=300`. A failing start previously retried indefinitely, and
+  every retry SIGKILLed the unit cgroup including each container's `conmon`,
+  which left containers stuck in the `Stopping` state that only a force-remove
+  clears.
+- Gitea data directory ownership. The installer mapped the rootless uid for n8n
+  and Mattermost but never for Gitea, whose process runs as uid 1000 inside the
+  container. With `./data/<svc>` hardened to 0700 the directory reads as
+  root-owned inside the user namespace, so Gitea failed with
+  `stat /data/gitea/conf/app.ini: permission denied` and crash-looped until the
+  unit hit its start timeout.
+- Images are pulled before the stack is handed to systemd, and the unit's
+  `TimeoutStartSec` is raised to 900s. A cold install previously expired the
+  120s timeout mid-pull and left a half-started stack.
+- Generated systemd user unit no longer quotes `WorkingDirectory`. systemd does
+  not strip quotes from that directive, so the quoted path was not absolute and
+  systemd >= 253 rejected the whole unit with "has a bad unit file setting".
+  The reference unit in `systemd/` had the same defect, and CI now rejects
+  quoted path directives.
+- `install.sh` fails closed when `LOCALCLOUD_PROFILES` is set but the installed
+  podman-compose has no `--profile` flag (added in 1.1.0; Ubuntu 24.04 ships
+  1.0.6). Previously the pre-start cleanup swallowed the resulting
+  `invalid choice: 'dns'` argparse error and the broken flags were still baked
+  into the systemd unit.
+- Installer surfaces real diagnostics (`systemctl status` + `journalctl`) when
+  the stack fails to start, instead of exiting on a bare systemd error line.
 - Backup mount guard now checks a marker file on the volume. The previous
   `mountpoint -q` check was defeated by the container bind-mount and never
   fired, so an unmounted disk could silently fill the host filesystem.

@@ -22,8 +22,19 @@ export RESTIC_REPOSITORY RESTIC_PASSWORD
 MARKER="$DEST_ROOT/.localcloud-backup-volume"
 FALLBACK_LOG="/var/log/backup.log"
 
+# cron redirects this script's stdout and stderr into a file, so anything written
+# normally is invisible to `podman logs backup`. Echo to PID 1's stdout as well
+# so a failed run is visible from the host without mounting the backup volume --
+# a backup that aborts every night is worse than one that never ran, precisely
+# because nothing announces it.
+console() {
+  echo "$1" > /proc/1/fd/1 2>/dev/null || true
+}
+
 abort() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] ERROR: $1" >> "$FALLBACK_LOG"
+  line="[$(date '+%Y-%m-%d %H:%M:%S %z')] ERROR: $1"
+  echo "$line" >> "$FALLBACK_LOG" 2>/dev/null || true
+  console "$line"
   exit 1
 }
 
@@ -42,7 +53,11 @@ fi
 # Persistent log on the backup volume so run history survives container
 # recreation (the guard above guarantees the volume is mounted by this point).
 LOG="$DEST_ROOT/backup.log"
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S %z')] $*" | tee -a "$LOG"; }
+log() {
+  line="[$(date '+%Y-%m-%d %H:%M:%S %z')] $*"
+  echo "$line" >> "$LOG"
+  console "$line"
+}
 
 log "Backup started."
 

@@ -66,6 +66,18 @@ normalize_profiles() {
   printf '%s' "$normalized"
 }
 
+# podman-compose only learned the global --profile flag in 1.1.0 (Ubuntu 24.04
+# ships 1.0.6). Older builds drop the unknown flag in argparse and then read the
+# profile name as the subcommand, so the real failure surfaces as the confusing
+# "argument command: invalid choice: 'dns'". Probe the capability rather than
+# parsing version strings.
+require_compose_profile_support() {
+  [ -n "$LOCALCLOUD_PROFILES" ] || return 0
+  if ! "$PODMAN_COMPOSE_BIN" --help 2>&1 | grep -q -- '--profile'; then
+    fail "$PODMAN_COMPOSE_BIN does not support --profile, but LOCALCLOUD_PROFILES='${LOCALCLOUD_PROFILES}' is set. Upgrade to podman-compose >= 1.1.0 (for example 'pipx install podman-compose') or clear LOCALCLOUD_PROFILES in .env."
+  fi
+}
+
 # True when LOCALCLOUD_PROFILES (comma-separated) contains the given profile.
 profile_enabled() {
   case ",${LOCALCLOUD_PROFILES}," in
@@ -94,6 +106,13 @@ check_tailscale() {
     fail "TAILSCALE_IP='$TAILSCALE_IP' does not match the detected tailscale0 address '$detected'."
   fi
   TAILSCALE_IP="$detected"
+  # tailscaled is a system unit outside this installer's control, but if it is
+  # not enabled at boot then remote access does not come back after a power cut
+  # -- the one moment it is needed most. Warn rather than fail: the unit name
+  # and state are the host's business, not the stack's.
+  if ! systemctl is-enabled --quiet tailscaled 2>/dev/null; then
+    info "WARNING: tailscaled is not enabled at boot. Remote access will not return after a reboot or power cut. Fix with: sudo systemctl enable --now tailscaled"
+  fi
   info "Private (Tier B) transport enabled; tailscale0 address ${TAILSCALE_IP}"
 }
 
@@ -151,12 +170,15 @@ PODMAN_COMPOSE_BIN="$(command -v podman-compose)"
 
 # Translate LOCALCLOUD_PROFILES (e.g. "dns,chat") into repeated --profile flags.
 PROFILE_ARGS_STRING=""
+PROFILE_ARGS=()
 for p in $(printf '%s' "$LOCALCLOUD_PROFILES" | tr ',' ' '); do
   if [ -n "$p" ]; then
     PROFILE_ARGS_STRING="$PROFILE_ARGS_STRING --profile $p"
+    PROFILE_ARGS+=(--profile "$p")
   fi
 done
 info "Enabled profiles: ${LOCALCLOUD_PROFILES:-none}"
+require_compose_profile_support
 
 # Per-profile required configuration.
 if profile_enabled mgmt; then require_env_value PODMAN_SOCKET_PATH; fi
@@ -189,8 +211,15 @@ mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
 chmod go-rwx ./data 2>/dev/null || true
 for d in ./data/*/; do chmod go-rwx "$d" 2>/dev/null || true; done
 
+# Every ./data/<svc> is mode 0700 and owned by the host user, which inside the
+# rootless user namespace reads as root:root. Containers whose process drops to
+# a non-root uid therefore cannot even traverse their own data directory, so
+# each one needs its uid mapped through `podman unshare chown`. Services that
+# stay root inside the container (adguard, glances, portainer, backup) need
+# nothing here.
 info "Fixing rootless Podman bind-mount ownership"
 podman unshare chown -R 1000:1000 ./data/n8n
+podman unshare chown -R 1000:1000 ./data/gitea
 podman unshare chown -R 2000:2000 \
   ./data/mattermost/config ./data/mattermost/data ./data/mattermost/logs \
   ./data/mattermost/plugins ./data/mattermost/client-plugins ./data/mattermost/bleve-indexes
@@ -224,25 +253,52 @@ elif [ "$BACKUP_REQUIRE_MOUNT" = "true" ]; then
   fail "$BACKUP_DEST_PATH is not mounted. Mount it before installing because BACKUP_REQUIRE_MOUNT=true."
 fi
 
+# A LUKS backup disk unlocked by hand does not come back after a power cut, and
+# the nightly backup then aborts every night until someone notices. Advisory
+# only: configuring boot-time unlock changes what the disk encryption protects
+# against, so it stays an explicit operator decision (./backup-automount.sh).
+case "$BACKUP_DEST_PATH" in
+  /*)
+    if ! grep -qE "[[:space:]]${BACKUP_DEST_PATH%/}[[:space:]]" /etc/fstab 2>/dev/null; then
+      info "NOTE: $BACKUP_DEST_PATH is not in /etc/fstab, so it will not remount itself after a reboot or power cut, and scheduled backups will abort until it is unlocked by hand. Run ./backup-automount.sh --device <luks-partition> to make that automatic (deployment.md section 12)."
+    fi
+    ;;
+esac
+
 info "Enabling rootless Podman socket and user service"
 loginctl enable-linger "$USER"
 systemctl --user enable --now podman.socket
 mkdir -p ~/.config/systemd/user
+# WorkingDirectory below is deliberately unquoted: systemd does not strip quotes
+# from that directive, and a leading quote makes the path non-absolute, which is
+# a fatal unit-file error on systemd >= 253 ("has a bad unit file setting").
+# ExecStart/ExecStop are quote-aware, so they keep their quotes and tolerate
+# spaces in the checkout path.
 cat > "$HOME/.config/systemd/user/$SERVICE_NAME" <<EOF
 [Unit]
 Description=LocalCloud Stack
 After=network-online.target podman.socket
 Wants=network-online.target
+# Bound restart loop. A failing "up -d" that systemd keeps retrying kills the
+# cgroup - conmon included - on every attempt, which wedges containers in the
+# "Stopping" state that only a force-remove clears. Three attempts, then stop
+# and let the operator read the logs.
+StartLimitIntervalSec=600
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory="$REPO_DIR"
+WorkingDirectory=$REPO_DIR
 ExecStart="$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE"$PROFILE_ARGS_STRING up -d
 ExecStop="$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE"$PROFILE_ARGS_STRING down
 Restart=on-failure
 RestartSec=10s
-TimeoutStartSec=120
+TimeoutStartSec=900
+# "down" stops nine containers, each with its own SIGTERM grace period. The
+# default stop timeout can expire mid-teardown and SIGKILL conmon, leaving
+# containers unreapable.
+TimeoutStopSec=300
 
 [Install]
 WantedBy=default.target
@@ -251,10 +307,32 @@ systemctl --user daemon-reload
 systemctl --user enable "$SERVICE_NAME"
 
 info "Stopping any existing LocalCloud containers before applying selected profiles"
-"$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat down --remove-orphans || true
+if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat down --remove-orphans; then
+  info "WARNING: pre-start cleanup exited non-zero (normal when nothing was running)."
+fi
+
+# Pull before handing over to systemd: a cold first install downloads several
+# hundred MB, and the unit's TimeoutStartSec would otherwise expire mid-pull and
+# SIGTERM a half-started stack.
+info "Pre-pulling service images"
+if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} pull; then
+  info "WARNING: image pre-pull exited non-zero (the locally built backup image has nothing to pull)."
+fi
+
+# Advisory: catches unit-file regressions before the restart hides them behind
+# a generic "bad unit file setting" message.
+if command -v systemd-analyze >/dev/null 2>&1; then
+  if ! systemd-analyze --user verify "$HOME/.config/systemd/user/$SERVICE_NAME" 2>&1; then
+    info "WARNING: systemd-analyze reported issues with $SERVICE_NAME (see above)."
+  fi
+fi
 
 info "Starting stack through systemd user service"
-systemctl --user restart "$SERVICE_NAME"
+if ! systemctl --user restart "$SERVICE_NAME"; then
+  systemctl --user status "$SERVICE_NAME" --no-pager || true
+  journalctl --user -u "$SERVICE_NAME" -n 30 --no-pager || true
+  fail "Failed to start $SERVICE_NAME. Diagnostics above."
+fi
 
 if [ "$TAILSCALE_ENABLED" = "true" ]; then
   info "Tailscale Tier B transport active: confirm 'sudo ufw allow in on tailscale0' and least-privilege ACLs (docs/tailscale.md)."

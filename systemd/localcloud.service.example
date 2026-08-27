@@ -7,16 +7,22 @@
 Description=LocalCloud Stack
 After=network-online.target podman.socket
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory="/opt/localcloud-stack"
+# Unquoted on purpose: systemd does not strip quotes from WorkingDirectory, and
+# a leading quote makes the path non-absolute -- a fatal unit-file error on
+# systemd >= 253. ExecStart/ExecStop are quote-aware and keep their quotes.
+WorkingDirectory=/opt/localcloud-stack
 ExecStart="/usr/bin/podman-compose" -f "/opt/localcloud-stack/docker-compose.yml" up -d
 ExecStop="/usr/bin/podman-compose" -f "/opt/localcloud-stack/docker-compose.yml" down
 Restart=on-failure
 RestartSec=10s
-TimeoutStartSec=120
+TimeoutStartSec=900
+TimeoutStopSec=300
 
 [Install]
 WantedBy=default.target

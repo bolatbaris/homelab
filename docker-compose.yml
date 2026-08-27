@@ -107,9 +107,14 @@ services:
     profiles:
       - chat
     restart: unless-stopped
+    # Plain ordering, not condition: service_healthy. Podman implements container
+    # healthchecks as systemd user timers; when that timer cannot be created
+    # (no user DBus session, for example) the health state stays "starting"
+    # forever and a health-gated depends_on blocks `up -d` until the unit's
+    # start timeout. Mattermost retries its database connection on startup and
+    # `restart: unless-stopped` covers the rest, so ordering alone is enough.
     depends_on:
-      mattermost-postgres:
-        condition: service_healthy
+      - mattermost-postgres
     environment:
       - TZ=${TZ:-UTC}
       - MM_SQLSETTINGS_DRIVERNAME=postgres
@@ -143,6 +148,8 @@ services:
       - POSTGRES_DB=mattermost
     volumes:
       - ./data/mattermost/postgres:/var/lib/postgresql/data
+    # Kept for `podman ps` visibility and manual `podman healthcheck run`, but
+    # deliberately not used to gate startup ordering - see mattermost above.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost"]
       interval: 10s
@@ -158,9 +165,10 @@ services:
     profiles:
       - chat
     restart: unless-stopped
+    # Same reasoning as mattermost above; the dump script already probes with
+    # pg_isready and skips the run when the database is not reachable yet.
     depends_on:
-      mattermost-postgres:
-        condition: service_healthy
+      - mattermost-postgres
     command: ["/bin/sh", "/usr/local/bin/mattermost-db-dump.sh"]
     environment:
       - TZ=${TZ:-UTC}

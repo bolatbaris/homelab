@@ -14,13 +14,14 @@ jobs:
         run: |
           bash -n install.sh
           bash -n restore.sh
+          bash -n backup-automount.sh
           bash -n run.sh
           sh -n backup/backup.sh
           sh -n backup/mattermost-db-dump.sh
 
       - name: ShellCheck (advisory)
         continue-on-error: true
-        run: shellcheck install.sh restore.sh run.sh backup/backup.sh backup/mattermost-db-dump.sh
+        run: shellcheck install.sh restore.sh run.sh backup-automount.sh backup/backup.sh backup/mattermost-db-dump.sh
 
       - name: Validate Compose config
         run: |
@@ -35,6 +36,16 @@ jobs:
       - name: No unbounded port publishes
         run: |
           ! grep -nE '^[[:space:]]*-[[:space:]]*"?[0-9]+:[0-9]+' docker-compose.yml compose.dev.yml
+
+      - name: systemd unit sanity
+        run: |
+          # systemd does not strip quotes from path-type directives; a leading
+          # quote makes the path non-absolute, which is a fatal unit-file error
+          # on systemd >= 253 ("has a bad unit file setting").
+          if grep -nE "^[[:space:]]*(WorkingDirectory|RootDirectory|RootImage)=[\"']" \
+               install.sh systemd/localcloud.service.example; then
+            echo "quoted path directive in a systemd unit -- systemd will reject it"; exit 1
+          fi
 
       - name: Conflict markers
         run: |
