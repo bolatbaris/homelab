@@ -595,12 +595,12 @@ The consequences are worth stating plainly:
 - **Adding a name to `APPDB_DATABASES` later does nothing.** The cluster is no
   longer empty. Create it by hand:
   ```sh
-  podman exec -it appdb psql -U postgres -c 'CREATE DATABASE app3 OWNER appuser'
+  podman exec -it appdb psql -U "$SU" -c 'CREATE DATABASE app3 OWNER appuser'
   ```
 - **Changing `APPDB_APP_PASSWORD` later does not change the database.** `.env`
   seeds; it does not reconcile. Rotate both sides:
   ```sh
-  podman exec -it appdb psql -U postgres \
+  podman exec -it appdb psql -U "$SU" \
     -c "ALTER ROLE appuser PASSWORD 'the-new-password'"
   # then set the same value in .env and re-run ./install.sh
   ```
@@ -672,6 +672,20 @@ name. This never touches the published port:
       - appdb-net
 ```
 
+### The Superuser Name Is Configurable
+
+`APPDB_SUPERUSER` defaults to `postgres`, but if you set it to anything else,
+that is the only superuser the cluster has - there is no `postgres` role to fall
+back on, and `psql -U postgres` fails with `role "postgres" does not exist` even
+though the database is healthy and the dump sidecar is connecting fine.
+
+Every `psql` example below uses `$SU`. Set it once per shell:
+
+```sh
+SU=$(grep -E '^APPDB_SUPERUSER=' .env | cut -d= -f2-); SU=${SU:-postgres}
+echo "superuser: $SU"
+```
+
 ### Verify
 
 ```sh
@@ -688,11 +702,20 @@ Confirm the negative case too, from a LAN host that is not on the tailnet:
 nc -z -w3 <server-lan-ip> 5432 && echo "EXPOSED - investigate" || echo "not reachable from LAN, correct"
 ```
 
-Check the dumps:
+Check the seeded databases and the dumps:
 
 ```sh
-ls -lh ./data/appdb/db-dumps/
+podman exec appdb psql -U "$SU" -c '\l'
+podman exec appdb psql -U "$SU" -c '\du'
 podman exec appdb-dump /usr/local/bin/pg-dump.sh once
+ls -lh ./data/appdb/db-dumps/
+```
+
+If a database you listed in `APPDB_DATABASES` is missing, the seed rejected it -
+its log says why:
+
+```sh
+podman logs appdb 2>&1 | grep -i 'appdb-seed'
 ```
 
 Expect `globals-latest.sql` plus one `<database>-latest.dump` per database.
@@ -718,10 +741,10 @@ podman unshare rm -rf ./data/appdb/postgres
 mkdir -p ./data/appdb/postgres
 podman-compose -f docker-compose.yml --profile db up -d appdb
 # wait for it to accept connections
-podman exec -i appdb psql -U postgres < ./data/appdb/db-dumps/globals-latest.sql
+podman exec -i appdb psql -U "$SU" < ./data/appdb/db-dumps/globals-latest.sql
 for db in app1 app2; do
-  podman exec -i appdb psql -U postgres -c "CREATE DATABASE $db OWNER appuser"
-  podman exec -i appdb pg_restore -U postgres -d "$db" \
+  podman exec -i appdb psql -U "$SU" -c "CREATE DATABASE $db OWNER appuser"
+  podman exec -i appdb pg_restore -U "$SU" -d "$db" \
     < "./data/appdb/db-dumps/$db-latest.dump"
 done
 ```
