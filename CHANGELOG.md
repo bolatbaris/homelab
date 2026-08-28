@@ -91,6 +91,10 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- `install.sh` warns when `restic` is missing from the host. Backups keep
+  succeeding without it, because the sidecar carries its own copy, so the gap
+  only surfaces when `restore.sh` exits on its first check -- during a restore,
+  which is the worst moment to find out.
 - `docs/tailscale.md` linked to "deployment.md section 11" for the Private Tier
   in two places; that section is 13, and 11 is *Recovering A Wedged Stack*.
 - `CONTRIBUTING.md` and the pull request template told contributors to

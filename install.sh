@@ -306,6 +306,15 @@ case "$BACKUP_DEST_PATH" in
     ;;
 esac
 
+# restic lives in the backup container, so backups run without it on the host --
+# but restore.sh needs the host binary and exits on its first check without one.
+# That combination hides itself: backups keep succeeding, and the gap only
+# surfaces during a restore, which is the worst moment to discover it. Warn
+# rather than fail: nothing about installing or running the stack needs it.
+if ! command -v restic >/dev/null 2>&1; then
+  info "WARNING: restic is not installed on this host. Backups still run (the sidecar carries its own), but ./restore.sh cannot run and disaster recovery would stall. Fix with: sudo apt install -y restic"
+fi
+
 info "Enabling rootless Podman socket and user service"
 loginctl enable-linger "$USER"
 systemctl --user enable --now podman.socket
