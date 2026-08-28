@@ -151,6 +151,8 @@ The installer:
 - fixes rootless Podman UID mappings for n8n and Mattermost data
 - reconfigures the host resolver for AdGuard only when the `dns` profile is enabled
 - creates the backup-volume marker when the backup disk is mounted
+- builds the local `./backup` image (a `build:` service is not rebuilt by
+  `up -d`, so without this step edits under `backup/` never reach the container)
 - enables rootless `podman.socket`
 - creates a user systemd service for the current checkout path (honoring `LOCALCLOUD_PROFILES`)
 - stops any old LocalCloud containers and starts the selected profile set through the user systemd service
@@ -175,6 +177,23 @@ Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (
 ```sh
 dig @"$LAN_IP" example.com
 curl -I "http://$LAN_IP:${ADGUARD_WEB_PORT:-3001}"
+```
+
+Confirm the backup container is the one this checkout describes, not an older
+image that happens to share its name:
+
+```sh
+podman exec backup restic version
+podman exec backup sh -c 'tail -5 /backup/backup.log'
+```
+
+`restic: not found` means the image is stale and the backups being written are
+whatever the previous entrypoint did. Rebuild:
+
+```sh
+podman-compose -f docker-compose.yml build --no-cache backup
+podman-compose -f docker-compose.yml up -d backup
+podman exec backup /usr/local/bin/backup.sh
 ```
 
 When the `chat` profile is enabled, verify the logical chat-history dump sidecar:

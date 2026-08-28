@@ -377,6 +377,17 @@ if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[
   info "WARNING: image pre-pull exited non-zero (the locally built backup image has nothing to pull)."
 fi
 
+# `up -d` reuses an existing image for a build: service without rebuilding, and
+# `pull` does nothing for one. Together that means edits under ./backup never
+# reach the running container: the installer reports success, the container keeps
+# running whatever was built months ago, and the backup that is actually taken is
+# not the backup the repository describes. Build explicitly, and fail rather than
+# start a stale one.
+info "Building local service images"
+if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} build; then
+  fail "Failed to build the local service images (./backup). Refusing to start, because starting would silently reuse the previously built image and run backup code this checkout does not contain."
+fi
+
 # Advisory: catches unit-file regressions before the restart hides them behind
 # a generic "bad unit file setting" message.
 if command -v systemd-analyze >/dev/null 2>&1; then
@@ -390,6 +401,16 @@ if ! systemctl --user restart "$SERVICE_NAME"; then
   systemctl --user status "$SERVICE_NAME" --no-pager || true
   journalctl --user -u "$SERVICE_NAME" -n 30 --no-pager || true
   fail "Failed to start $SERVICE_NAME. Diagnostics above."
+fi
+
+# Check the container that actually runs, not the image we think we built. A
+# stale backup container reports healthy while taking a different backup than
+# this checkout describes -- unencrypted and unversioned, in the case this was
+# found in. Cheap to verify, invisible otherwise.
+if podman ps --format '{{.Names}}' | grep -qx backup; then
+  if ! podman exec backup sh -c 'command -v restic >/dev/null 2>&1'; then
+    info "WARNING: the running backup container has no restic, so it is not taking encrypted restic snapshots. The image is stale. Fix with: podman-compose -f docker-compose.yml build --no-cache backup && podman-compose -f docker-compose.yml up -d backup"
+  fi
 fi
 
 if [ "$TAILSCALE_ENABLED" = "true" ]; then

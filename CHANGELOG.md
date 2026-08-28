@@ -91,6 +91,17 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- The installer builds `./backup` instead of reusing whatever image already
+  carries that name. `podman-compose up -d` does not rebuild a `build:` service
+  when the image exists, and `pull` does nothing for one, so every edit under
+  `backup/` since the image was first built stayed out of the running container.
+  On the host this was found on, that meant the switch from an rsync mirror to
+  encrypted restic snapshots had never taken effect: the installer reported
+  success for months while the container kept running the pre-restic script, so
+  the backups on the disk were unencrypted, unversioned, and `--delete`d
+  alongside the source. The build now fails the install rather than starting a
+  stale image, and a post-start check warns when the running backup container
+  has no restic.
 - `install.sh` warns when `restic` is missing from the host. Backups keep
   succeeding without it, because the sidecar carries its own copy, so the gap
   only surfaces when `restore.sh` exits on its first check -- during a restore,
