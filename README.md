@@ -23,6 +23,7 @@ This is not a hosted SaaS product. It is installable self-hosted software: users
 | Gitea | self-hosted Git | Cloudflare Tunnel for HTTP, LAN-bound SSH |
 | n8n | workflow automation | Cloudflare Tunnel, protect UI with Access |
 | restic backup sidecar | encrypted, versioned backups | no network |
+| PostgreSQL + Adminer (`db` profile) | application database for your own backends | Tailscale only, never Cloudflare |
 
 Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-separated, e.g. `LOCALCLOUD_PROFILES=dns,chat`):
 
@@ -31,6 +32,7 @@ Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-sepa
 | `dns` | AdGuard Home - LAN DNS + ad-blocking. The installer reconfigures the host resolver (`/etc/resolv.conf`, systemd-resolved, port 53). | off |
 | `mgmt` | Portainer | off |
 | `chat` | Mattermost + Postgres + logical chat-history dumps | off |
+| `db` | PostgreSQL + Adminer + logical dumps - the Private (Tier B) application database. Requires `TAILSCALE_ENABLED=true`; the installer refuses the profile without it. | off |
 
 ## Requirements
 
@@ -39,7 +41,7 @@ Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-sepa
 - Cloudflare account and Tunnel token
 - Static LAN IP for the server
 - USB or external disk for backups
-- Optional: Tailscale on the host for the Private (Tier B) transport
+- Optional: Tailscale on the host for the Private (Tier B) transport - **required** if you enable the `db` profile
 
 ## Install
 
@@ -66,7 +68,9 @@ Minimum required `.env` values:
 
 Enable the Private (Tier B) transport with `TAILSCALE_ENABLED=true` after installing Tailscale on the host (see [deployment.md section 13](deployment.md)); `install.sh` detects the tailscale0 address and writes it to `TAILSCALE_IP`.
 
-Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). Valid values are `dns`, `mgmt`, and `chat`; invalid values fail the installer. `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` and `MATTERMOST_SUBDOMAIN` are required only for the `chat` profile.
+Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). Valid values are `dns`, `mgmt`, `chat`, and `db`; invalid values fail the installer. `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` and `MATTERMOST_SUBDOMAIN` are required only for the `chat` profile.
+
+The `db` profile additionally requires `TAILSCALE_ENABLED=true` plus `APPDB_SUPERUSER_PASSWORD`, `APPDB_APP_USER`, `APPDB_APP_PASSWORD`, and `APPDB_DATABASES`. It publishes PostgreSQL and Adminer on the tailscale0 address only, and neither is ever routed through Cloudflare Tunnel. See [deployment.md section 14](deployment.md).
 
 Generate secrets:
 
@@ -100,7 +104,7 @@ podman-compose -f docker-compose.yml -f compose.dev.yml --profile chat up -d
 Services follow a three-tier exposure model:
 
 - **Public (Tier A)** - published through Cloudflare Tunnel under per-hostname Cloudflare Access policies.
-- **Private (Tier B)** - reachable only through Tailscale; services bind to the tailscale0 address, never to all interfaces.
+- **Private (Tier B)** - reachable only through Tailscale; services bind to the tailscale0 address, never to all interfaces. The `db` profile's PostgreSQL and Adminer are the first services in this tier.
 - **Internal (Tier C)** - never published; loopback or internal compose networks only, reached via SSH.
 
 Additional rules:

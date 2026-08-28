@@ -9,7 +9,7 @@ Every service belongs to exactly one exposure tier. The tier decides how it is p
 | Tier | Name | Transport | Binding | Identity | Examples |
 |---|---|---|---|---|---|
 | A | Public | Cloudflare Tunnel | `edge-net` only | per-hostname Cloudflare Access policy | gitea (HTTP), n8n, glances, mattermost* |
-| B | Private | Tailscale (tailnet) | tailscale0 address only | tailnet membership + ACL + service auth | planned: postgres, env store |
+| B | Private | Tailscale (tailnet) | tailscale0 address only | tailnet membership + ACL + service auth | appdb (PostgreSQL)*, appdb-adminer* |
 | C | Internal | SSH / `podman exec` | loopback or no published port | host shell access | mattermost-postgres, backup, portainer* |
 
 \* profile-gated optional services.
@@ -37,7 +37,10 @@ Tier B - Private:
 - Bind to the tailscale0 address, or publish no host port at all. Never bind to `0.0.0.0`, `::`, or a bare port.
 - ufw allows inbound on `tailscale0` only; the public interface stays default-deny.
 - Tailscale ACLs grant only the required ports from the required devices.
-- Planned services of this tier: PostgreSQL, env/secret store, and Gitea SSH (moved from its LAN bind).
+- Implemented services in this tier: the `db` profile's PostgreSQL (`appdb`) and Adminer (`appdb-adminer`). They bind `${TAILSCALE_IP}` through compose's required-variable form, so an empty address fails the render instead of falling back to every interface. `install.sh` refuses the profile unless `TAILSCALE_ENABLED=true` and probes that podman-compose actually implements that form, and CI asserts both behaviors.
+- These services are deliberately absent from `edge-net`. `cloudflared` reaches only that network, so a public hostname created by mistake still cannot route to the database. The exposure boundary is the network topology, not a dashboard setting.
+- Adminer has no accounts of its own; the PostgreSQL credentials are the only authentication. Tailnet membership is therefore the outer perimeter, not a convenience.
+- Still planned for this tier: an env/secret store, and Gitea SSH (moved from its LAN bind).
 
 Tier C - Internal:
 
@@ -47,7 +50,9 @@ Tier C - Internal:
 
 ### CI Enforcement
 
-`docker-compose.yml` and `compose.dev.yml` must never publish a bare `"<port>:<port>"` without an explicit interface address. CI rejects unbounded publishes (see `.github/workflows/ci.yml`). Tier B services bind to the tailscale0 address, Tier A services are reached through the tunnel without published ports, and Tier C services publish nothing.
+`docker-compose.yml` and `compose.dev.yml` must never publish a port whose host part is anything other than `127.0.0.1`, `${LAN_IP…}`, or `${TAILSCALE_IP…}`. `tests/compose-guards.sh` enforces that, asserts that no Tier B service joins `edge-net`, and asserts the fail-closed property directly: rendering the `db` profile with an empty `TAILSCALE_IP` must fail, and rendering it with one set must bind that address and no wildcard. CI runs the script on every push, and you can run it yourself with `./tests/compose-guards.sh`.
+
+Tier B services bind to the tailscale0 address, Tier A services are reached through the tunnel without published ports, and Tier C services publish nothing.
 
 ## Remote Access Policy (Tailscale)
 
@@ -79,6 +84,8 @@ sudo ufw enable
 
 The port 53 and 3001 rules are only needed when the `dns` profile is enabled; port 2222 is Gitea SSH. The `tailscale0` rule is only needed once Tailscale is installed on the host.
 
+The `db` profile needs no rule of its own beyond `sudo ufw allow in on tailscale0`: PostgreSQL and Adminer bind the tailscale0 address, so the default-deny public interface already covers them.
+
 ## Secrets
 
 `.env` must be mode `600`.
@@ -89,6 +96,7 @@ Generate required secrets:
 openssl rand -hex 32      # N8N_ENCRYPTION_KEY
 openssl rand -base64 48   # RESTIC_PASSWORD
 openssl rand -hex 32      # MATTERMOST_DB_PASSWORD if enabling --profile chat
+openssl rand -hex 32      # APPDB_SUPERUSER_PASSWORD and APPDB_APP_PASSWORD if enabling --profile db
 ```
 
 Prefer hex for values embedded in connection strings. Store `N8N_ENCRYPTION_KEY` and `RESTIC_PASSWORD` outside the backup disk. Losing either can make data unrecoverable.
@@ -118,6 +126,7 @@ Production baseline:
 - Restore tested before storing important data.
 - Cold/manual backups before major upgrades, especially when the `chat` profile is enabled and PostgreSQL is active.
 - Host disk encryption recommended when using `chat`, because `./data/mattermost` contains the live PostgreSQL database and logical dumps of message history before restic encrypts the backup copy.
+- The same applies to `db`: `./data/appdb` holds the live application database plus logical dumps, including `globals-latest.sql`, which carries every role's password hash.
 
 ## Updates
 

@@ -50,9 +50,17 @@ Required production values:
 - `BACKUP_DEST_PATH=/mnt/usb-disk`
 - `BACKUP_REQUIRE_MOUNT=true`
 - `RESTIC_PASSWORD=<openssl rand -base64 48>`
+
+Leave `RESTIC_REPOSITORY` unset. It is a path inside the backup container, where
+the disk is mounted at `/backup`, so `/backup/restic-repo` is its only correct
+value and `docker-compose.yml` already supplies it. Setting it to the host path
+looks reasonable and fails silently: restic writes the repository into the
+container's writable layer, reports healthy snapshots, and loses them on the
+next recreate while the disk stays empty. `backup.sh` refuses anything outside
+`/backup`.
 - `N8N_ENCRYPTION_KEY=<openssl rand -hex 32>`
 
-Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`.
+Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`, `db`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`. The `db` profile (section 14) needs `TAILSCALE_ENABLED=true` and the `APPDB_*` values; the installer refuses it otherwise.
 
 ## 3. Static LAN IP
 
@@ -97,7 +105,7 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. The `tailscale0` rule (`sudo ufw allow in on tailscale0`) is only needed once the Private tier transport is installed - see section 13. Drop the rules for services you do not run.
+The port 53 and 3001 rules are only needed when the `dns` profile (AdGuard) is enabled; port 2222 is Gitea SSH. The `tailscale0` rule (`sudo ufw allow in on tailscale0`) is only needed once the Private tier transport is installed - see section 13. The `db` profile (section 14) needs no rule beyond that one, because PostgreSQL and Adminer bind the tailscale0 address. Drop the rules for services you do not run.
 
 ## 5. Encrypted Backup Disk
 
@@ -151,6 +159,8 @@ The installer:
 - fixes rootless Podman UID mappings for n8n and Mattermost data
 - reconfigures the host resolver for AdGuard only when the `dns` profile is enabled
 - creates the backup-volume marker when the backup disk is mounted
+- builds the local `./backup` image (a `build:` service is not rebuilt by
+  `up -d`, so without this step edits under `backup/` never reach the container)
 - enables rootless `podman.socket`
 - creates a user systemd service for the current checkout path (honoring `LOCALCLOUD_PROFILES`)
 - stops any old LocalCloud containers and starts the selected profile set through the user systemd service
@@ -170,11 +180,28 @@ Expected base services:
 - n8n
 - backup
 
-Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`). When the `dns` profile is enabled, also verify AdGuard:
+Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`), `appdb` + `appdb-adminer` + `appdb-dump` (`db`). When the `dns` profile is enabled, also verify AdGuard:
 
 ```sh
 dig @"$LAN_IP" example.com
 curl -I "http://$LAN_IP:${ADGUARD_WEB_PORT:-3001}"
+```
+
+Confirm the backup container is the one this checkout describes, not an older
+image that happens to share its name:
+
+```sh
+podman exec backup restic version
+podman exec backup sh -c 'tail -5 /backup/backup.log'
+```
+
+`restic: not found` means the image is stale and the backups being written are
+whatever the previous entrypoint did. Rebuild:
+
+```sh
+podman-compose -f docker-compose.yml build --no-cache backup
+podman-compose -f docker-compose.yml up -d backup
+podman exec backup /usr/local/bin/backup.sh
 ```
 
 When the `chat` profile is enabled, verify the logical chat-history dump sidecar:
@@ -208,7 +235,9 @@ cd ~/localcloud-stack
 ./restore.sh <id>       # a specific snapshot from `restic snapshots`
 ```
 
-Manual equivalent - note the `podman unshare`, required so restored files get the user-namespace ownership the containers expect (a plain non-root restore cannot set those owners). Add the same `--profile ...` flags you enabled in `.env`:
+Manual equivalent - note the `podman unshare`, required so restored files get the user-namespace ownership the containers expect (a plain non-root restore cannot set those owners). Add the same `--profile ...` flags you enabled in `.env`.
+
+`RESTIC_REPOSITORY` below is the **host** path, `${BACKUP_DEST_PATH}/restic-repo`, because restic is running on the host here. That is a different view of the same repository the backup container reaches at `/backup/restic-repo`, and it is why the variable belongs in this command rather than in `.env`.
 
 ```sh
 cd ~/localcloud-stack
@@ -519,6 +548,8 @@ Optional. Enables the Private (Tier B) exposure tier - see [SECURITY.md](SECURIT
 
 4. Rerun `./install.sh`. The installer fails closed when `TAILSCALE_ENABLED=true` but the `tailscale` binary is missing or the node has no tailscale0 address.
 
+The `db` profile (section 14) depends on this section being complete; the installer refuses it otherwise.
+
 Verify from an enrolled device on a foreign network:
 
 ```sh
@@ -533,3 +564,229 @@ ss -tlnp | grep <port>   # foreign address must be the 100.x tailscale IP, never
 ```
 
 Rollback: `sudo tailscale down`, remove the ufw rule, set `TAILSCALE_ENABLED=false`, rerun `./install.sh`.
+
+## 14. Application Database (`db` Profile)
+
+Optional. A general-purpose PostgreSQL for your own backend applications, plus
+Adminer, plus a logical-dump sidecar. This is a Private (Tier B) service: it is
+reachable over Tailscale and from the `appdb-net` compose network, and it is
+never published to the LAN or routed through Cloudflare Tunnel.
+
+Separate from `mattermost-postgres` on purpose. That one stays internal to the
+`chat` profile, keeps its own PostgreSQL 15 pin, and shares no data, no network,
+and no restore blast radius with your application databases.
+
+### Prerequisites
+
+Section 13 first. The `db` profile is refused without it:
+
+```
+ERROR: LOCALCLOUD_PROFILES includes 'db', but TAILSCALE_ENABLED is not 'true'.
+```
+
+That is deliberate. Without a tailscale0 address the port mapping has nothing to
+bind to and would fall back to every interface, putting the database on the LAN.
+
+### Enable
+
+In `.env`:
+
+```sh
+LOCALCLOUD_PROFILES=db          # or e.g. dns,chat,db
+TAILSCALE_ENABLED=true
+
+APPDB_SUPERUSER_PASSWORD=<openssl rand -hex 32>
+APPDB_APP_USER=appuser
+APPDB_APP_PASSWORD=<openssl rand -hex 32>
+APPDB_DATABASES=app1,app2
+```
+
+Hex, not base64: `+`, `/`, and `=` break a `postgres://` connection string.
+
+Then:
+
+```sh
+./install.sh
+```
+
+### What The First Start Creates
+
+On a **fresh** cluster only, `db/initdb/10-appdb-seed.sh` creates the
+`APPDB_APP_USER` role and one database per `APPDB_DATABASES` entry, each owned by
+that role, each with `CONNECT` revoked from `PUBLIC`.
+
+"Fresh" means `./data/appdb/postgres` is empty. This is what makes a restore win
+over the seed: `./restore.sh` repopulates that directory, so the seed does not
+run and cannot overwrite recovered data.
+
+The consequences are worth stating plainly:
+
+- **Adding a name to `APPDB_DATABASES` later does nothing.** The cluster is no
+  longer empty. Create it by hand:
+  ```sh
+  podman exec -it appdb psql -U "$SU" -c 'CREATE DATABASE app3 OWNER appuser'
+  ```
+- **Changing `APPDB_APP_PASSWORD` later does not change the database.** `.env`
+  seeds; it does not reconcile. Rotate both sides:
+  ```sh
+  podman exec -it appdb psql -U "$SU" \
+    -c "ALTER ROLE appuser PASSWORD 'the-new-password'"
+  # then set the same value in .env and re-run ./install.sh
+  ```
+
+Database and role names must match `^[a-z_][a-z0-9_]{0,62}$`. They become SQL
+identifiers, which cannot be parameterized, so the seed rejects anything else
+rather than trying to quote it, and the container refuses to start.
+
+### Grant The Ports In Your Tailscale ACL
+
+Binding to the tailscale0 address makes the database reachable *on* the tailnet;
+it does not make it reachable *to* a device. A least-privilege ACL still has to
+grant the ports, and the symptom of forgetting is a connection that times out
+from a device that is otherwise on the tailnet and can SSH in fine.
+
+In the admin console, extend the grants from section 13:
+
+```json
+"grants": [
+    {"src": ["laptop-alias"], "dst": ["server-alias"], "ip": ["22"]},
+    {"src": ["laptop-alias"], "dst": ["server-alias"], "ip": ["5432", "8081"]}
+],
+"tests": [
+    {
+        "src": "100.a.b.c",
+        "accept": ["server-alias:22", "server-alias:5432", "server-alias:8081"],
+        "deny": ["server-alias:3001"]
+    }
+]
+```
+
+Plain port numbers only - `"5432"`, never `"5432/tcp"`. Keeping the database
+grant on its own rule means a future device can be given `5432` without also
+being given the Adminer UI. The `tests` block is validated when you save, so it
+becomes a regression test against someone narrowing the grant later.
+
+Changes apply immediately; nothing needs restarting.
+
+### Connect
+
+From any device on your tailnet:
+
+```sh
+tailscale ip -4                 # on the server: the address the database binds
+nc -vz <tailscale-ip> 5432      # port reachability, before blaming the client
+psql "postgresql://appuser@<tailscale-ip>:5432/app1"
+```
+
+If `nc` fails, the ACL grant above is missing. If `nc` succeeds and `psql` does
+not exist, install a client rather than changing anything on the server. ICMP is
+denied by the example ACL on purpose, so verify the path with
+`tailscale ping <server>` rather than `ping`.
+
+A GUI client (DBeaver, TablePlus, DataGrip) uses the same values: host is the
+server's `100.x` tailscale address, port `5432`, user `APPDB_APP_USER`, password
+`APPDB_APP_PASSWORD`.
+
+Adminer: `http://<tailscale-ip>:8081`, pre-pointed at the `appdb` server.
+Adminer has no accounts of its own - the PostgreSQL credentials are the only
+authentication, which is why it lives behind the tailnet.
+
+From a container in this compose project, join `appdb-net` and use the service
+name. This never touches the published port:
+
+```yaml
+    environment:
+      - DATABASE_URL=postgres://appuser:${APPDB_APP_PASSWORD}@appdb:5432/app1
+    networks:
+      - appdb-net
+```
+
+### The Superuser Name Is Configurable
+
+`APPDB_SUPERUSER` defaults to `postgres`, but if you set it to anything else,
+that is the only superuser the cluster has - there is no `postgres` role to fall
+back on, and `psql -U postgres` fails with `role "postgres" does not exist` even
+though the database is healthy and the dump sidecar is connecting fine.
+
+Every `psql` example below uses `$SU`. Set it once per shell:
+
+```sh
+SU=$(grep -E '^APPDB_SUPERUSER=' .env | cut -d= -f2-); SU=${SU:-postgres}
+echo "superuser: $SU"
+```
+
+### Verify
+
+```sh
+podman ps --filter name=appdb --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+ss -tlnp | grep 5432
+```
+
+The listening address must be the `100.x` tailscale address. **If you ever see
+`0.0.0.0:5432` or `*:5432`, stop and fix it** - the database is on your LAN.
+
+Confirm the negative case too, from a LAN host that is not on the tailnet:
+
+```sh
+nc -z -w3 <server-lan-ip> 5432 && echo "EXPOSED - investigate" || echo "not reachable from LAN, correct"
+```
+
+Check the seeded databases and the dumps:
+
+```sh
+podman exec appdb psql -U "$SU" -c '\l'
+podman exec appdb psql -U "$SU" -c '\du'
+podman exec appdb-dump /usr/local/bin/pg-dump.sh once
+ls -lh ./data/appdb/db-dumps/
+```
+
+If a database you listed in `APPDB_DATABASES` is missing, the seed rejected it -
+its log says why:
+
+```sh
+podman logs appdb 2>&1 | grep -i 'appdb-seed'
+```
+
+Expect `globals-latest.sql` plus one `<database>-latest.dump` per database.
+
+### Restore
+
+**Normal path** - the raw data directory, via the usual helper. It restores every
+service's data, keeps your current data aside, and honors the profiles in `.env`:
+
+```sh
+./restore.sh              # latest snapshot
+./restore.sh <id>         # a specific snapshot from `restic snapshots`
+```
+
+**Logical path** - when the raw data directory is damaged. The raw `PGDATA` is
+copied file-level while PostgreSQL may be writing, so it carries a torn-copy
+risk; the logical dumps do not. Load the globals first, or the databases will
+exist with nobody able to log in to them:
+
+```sh
+podman-compose -f docker-compose.yml --profile db down
+podman unshare rm -rf ./data/appdb/postgres
+mkdir -p ./data/appdb/postgres
+podman-compose -f docker-compose.yml --profile db up -d appdb
+# wait for it to accept connections
+podman exec -i appdb psql -U "$SU" < ./data/appdb/db-dumps/globals-latest.sql
+for db in app1 app2; do
+  podman exec -i appdb psql -U "$SU" -c "CREATE DATABASE $db OWNER appuser"
+  podman exec -i appdb pg_restore -U "$SU" -d "$db" \
+    < "./data/appdb/db-dumps/$db-latest.dump"
+done
+```
+
+Restoring the globals brings back role passwords as stored hashes, so
+applications keep working with the credentials already in their configuration.
+
+### Rollback
+
+```sh
+# in .env: remove `db` from LOCALCLOUD_PROFILES
+./install.sh
+```
+
+The installer stops the profile's containers. `./data/appdb` is left in place -
+delete it by hand once you are sure you want the data gone.

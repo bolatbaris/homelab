@@ -1,9 +1,11 @@
 # Tailscale Integration Plan
 
-Status: **Phase V2 implemented** - installer integration and documentation are
-in place; Phase V1 (host install) is a manual step, see
-[deployment.md section 11](../deployment.md#11-private-tier-tailscale).
-Phase V3 (first Tier B service) is a separate design. Policy context:
+Status: **Phase V3 implemented** - the application database (`db` profile) is the
+first service to actually occupy Tier B, see
+[deployment.md section 14](../deployment.md#14-application-database-db-profile).
+Phase V1 (host install) is a manual step, see
+[deployment.md section 13](../deployment.md#13-private-tier-tailscale).
+Phase V4 (SSH tightening) remains open. Policy context:
 [SECURITY.md](../SECURITY.md). Once a phase lands, its operational steps live in
 [deployment.md](../deployment.md) and this file stays as the design reference.
 
@@ -66,7 +68,7 @@ instead of a LAN IP.
    - disable key expiry for the server node only;
    - MagicDNS on; "Override local DNS" OFF on the server.
 
-   ACL syntax notes (current `grants` format, see deployment.md section 11 for
+   ACL syntax notes (current `grants` format, see deployment.md section 13 for
    a full example): the `ip` field accepts plain port numbers only (`"22"`),
    not `"22/tcp"` or `"tcp/22"`; device hostnames must be aliased via `hosts`
    with their tailnet IPs; ICMP is intentionally denied, so verify with
@@ -103,12 +105,16 @@ TAILSCALE_IP=
 CI addition: reject unbounded `"<port>:<port>"` publishes in compose files
 (implemented together with the SECURITY.md exposure-tier change).
 
-### Phase V3 - First Tier B Service (PostgreSQL)
+### Phase V3 - First Tier B Service (PostgreSQL) - implemented
 
-Separate design, follows the Tier B controls from SECURITY.md: bind to
-`${TAILSCALE_IP}`, live on `db-net` (`internal: true`), and reuse the existing
-backup pattern (pg_dump sidecar + read-only restic mount). Not part of this plan
-beyond the interface contract.
+Delivered as the `db` profile: `appdb` (PostgreSQL), `appdb-adminer`, and
+`appdb-dump`. It binds `${TAILSCALE_IP}` through compose's required-variable
+form, lives on its own `appdb-net` (`internal: true`) rather than sharing
+Mattermost's `db-net`, stays off `edge-net` so `cloudflared` cannot reach it,
+and reuses the backup pattern (logical dump sidecar plus a read-only restic
+mount). Design:
+`docs/superpowers/specs/2026-08-28-appdb-tier-b-design.md`. Operations:
+[deployment.md section 14](../deployment.md#14-application-database-db-profile).
 
 ### Phase V4 - Documentation And SSH Tightening
 

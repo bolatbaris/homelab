@@ -16,26 +16,34 @@ jobs:
           bash -n restore.sh
           bash -n backup-automount.sh
           bash -n run.sh
+          bash -n tests/compose-guards.sh
+          bash -n tests/appdb-integration.sh
           sh -n backup/backup.sh
-          sh -n backup/mattermost-db-dump.sh
+          sh -n backup/pg-dump.sh
+          sh -n db/initdb/10-appdb-seed.sh
 
       - name: ShellCheck (advisory)
         continue-on-error: true
-        run: shellcheck install.sh restore.sh run.sh backup-automount.sh backup/backup.sh backup/mattermost-db-dump.sh
+        run: shellcheck install.sh restore.sh run.sh backup-automount.sh
+             tests/compose-guards.sh tests/appdb-integration.sh
+             backup/backup.sh backup/pg-dump.sh db/initdb/10-appdb-seed.sh
 
       - name: Validate Compose config
         run: |
-          cp .env.example .env
+          # The db profile binds ${TAILSCALE_IP} through compose's required-variable
+          # form, so the render needs an address. Supplying a placeholder here is the
+          # guard working as designed; tests/compose-guards.sh asserts the empty case
+          # still fails.
+          sed -E 's/^(TAILSCALE_IP)=.*/\1=100.64.0.1/' .env.example > .env
           docker compose -f docker-compose.yml config >/dev/null
-          docker compose -f docker-compose.yml --profile dns --profile mgmt --profile chat config >/dev/null
-          docker compose -f docker-compose.yml -f compose.dev.yml --profile dns --profile mgmt --profile chat config >/dev/null
+          docker compose -f docker-compose.yml --profile dns --profile mgmt --profile chat --profile db config >/dev/null
+          docker compose -f docker-compose.yml -f compose.dev.yml --profile dns --profile mgmt --profile chat --profile db config >/dev/null
 
       - name: No auto-loaded override
         run: test ! -f docker-compose.override.yml
 
-      - name: No unbounded port publishes
-        run: |
-          ! grep -nE '^[[:space:]]*-[[:space:]]*"?[0-9]+:[0-9]+' docker-compose.yml compose.dev.yml
+      - name: Exposure guards
+        run: ./tests/compose-guards.sh
 
       - name: systemd unit sanity
         run: |
