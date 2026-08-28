@@ -50,6 +50,14 @@ Required production values:
 - `BACKUP_DEST_PATH=/mnt/usb-disk`
 - `BACKUP_REQUIRE_MOUNT=true`
 - `RESTIC_PASSWORD=<openssl rand -base64 48>`
+
+Leave `RESTIC_REPOSITORY` unset. It is a path inside the backup container, where
+the disk is mounted at `/backup`, so `/backup/restic-repo` is its only correct
+value and `docker-compose.yml` already supplies it. Setting it to the host path
+looks reasonable and fails silently: restic writes the repository into the
+container's writable layer, reports healthy snapshots, and loses them on the
+next recreate while the disk stays empty. `backup.sh` refuses anything outside
+`/backup`.
 - `N8N_ENCRYPTION_KEY=<openssl rand -hex 32>`
 
 Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`, `db`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`. The `db` profile (section 14) needs `TAILSCALE_ENABLED=true` and the `APPDB_*` values; the installer refuses it otherwise.

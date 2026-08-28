@@ -91,6 +91,11 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- `RESTIC_REPOSITORY` is no longer offered in `.env.example`. It has exactly one
+  correct value, `/backup/restic-repo`, which `docker-compose.yml` already
+  supplies - a container path that does not vary with `BACKUP_DEST_PATH`, and a
+  remote repository is impossible anyway under `network_mode: none`. Exposing it
+  as a knob added no capability and one silent failure.
 - `backup.sh` refuses a `RESTIC_REPOSITORY` outside `/backup`. It is a path
   inside the container, where the backup disk is mounted; pointing it at the
   host path instead makes restic create the repository in the container's own
