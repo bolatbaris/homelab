@@ -46,6 +46,19 @@ if [ -z "${RESTIC_PASSWORD:-}" ]; then
   abort "RESTIC_PASSWORD is not set. Aborting encrypted backup."
 fi
 
+# RESTIC_REPOSITORY is a path *inside this container*, where the backup volume is
+# mounted at $DEST_ROOT. Setting it to the host path instead is an easy mistake
+# and a silent one: restic happily creates a repository in the container's own
+# writable layer, reports a successful snapshot, and loses all of it the next
+# time the container is recreated. The backup disk stays empty while every run
+# says OK. Refuse instead.
+case "$RESTIC_REPOSITORY" in
+  "$DEST_ROOT"|"$DEST_ROOT"/*) ;;
+  *)
+    abort "RESTIC_REPOSITORY='$RESTIC_REPOSITORY' is not under $DEST_ROOT. That path is inside this container, not on the backup disk, so snapshots would be written to ephemeral container storage and lost. Set RESTIC_REPOSITORY=$DEST_ROOT/restic-repo in .env (it is a container path, not a host path)."
+    ;;
+esac
+
 if [ ! -d "$SRC_ROOT" ]; then
   abort "$SRC_ROOT does not exist. Nothing to back up."
 fi

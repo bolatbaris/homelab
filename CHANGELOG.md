@@ -91,6 +91,11 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost and PostgreSQL images are overridable via `.env`.
 
 ### Fixed
+- `backup.sh` refuses a `RESTIC_REPOSITORY` outside `/backup`. It is a path
+  inside the container, where the backup disk is mounted; pointing it at the
+  host path instead makes restic create the repository in the container's own
+  writable layer, report a successful snapshot, and lose it on the next
+  recreate - while the backup disk stays empty and every run reports OK.
 - The installer builds `./backup` instead of reusing whatever image already
   carries that name. `podman-compose up -d` does not rebuild a `build:` service
   when the image exists, and `pull` does nothing for one, so every edit under
