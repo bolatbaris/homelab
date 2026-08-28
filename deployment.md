@@ -235,7 +235,9 @@ cd ~/localcloud-stack
 ./restore.sh <id>       # a specific snapshot from `restic snapshots`
 ```
 
-Manual equivalent - note the `podman unshare`, required so restored files get the user-namespace ownership the containers expect (a plain non-root restore cannot set those owners). Add the same `--profile ...` flags you enabled in `.env`:
+Manual equivalent - note the `podman unshare`, required so restored files get the user-namespace ownership the containers expect (a plain non-root restore cannot set those owners). Add the same `--profile ...` flags you enabled in `.env`.
+
+`RESTIC_REPOSITORY` below is the **host** path, `${BACKUP_DEST_PATH}/restic-repo`, because restic is running on the host here. That is a different view of the same repository the backup container reaches at `/backup/restic-repo`, and it is why the variable belongs in this command rather than in `.env`.
 
 ```sh
 cd ~/localcloud-stack
