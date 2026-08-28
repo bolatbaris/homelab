@@ -609,14 +609,50 @@ Database and role names must match `^[a-z_][a-z0-9_]{0,62}$`. They become SQL
 identifiers, which cannot be parameterized, so the seed rejects anything else
 rather than trying to quote it, and the container refuses to start.
 
+### Grant The Ports In Your Tailscale ACL
+
+Binding to the tailscale0 address makes the database reachable *on* the tailnet;
+it does not make it reachable *to* a device. A least-privilege ACL still has to
+grant the ports, and the symptom of forgetting is a connection that times out
+from a device that is otherwise on the tailnet and can SSH in fine.
+
+In the admin console, extend the grants from section 13:
+
+```json
+"grants": [
+    {"src": ["laptop-alias"], "dst": ["server-alias"], "ip": ["22"]},
+    {"src": ["laptop-alias"], "dst": ["server-alias"], "ip": ["5432", "8081"]}
+],
+"tests": [
+    {
+        "src": "100.a.b.c",
+        "accept": ["server-alias:22", "server-alias:5432", "server-alias:8081"],
+        "deny": ["server-alias:3001"]
+    }
+]
+```
+
+Plain port numbers only - `"5432"`, never `"5432/tcp"`. Keeping the database
+grant on its own rule means a future device can be given `5432` without also
+being given the Adminer UI. The `tests` block is validated when you save, so it
+becomes a regression test against someone narrowing the grant later.
+
+Changes apply immediately; nothing needs restarting.
+
 ### Connect
 
 From any device on your tailnet:
 
 ```sh
 tailscale ip -4                 # on the server: the address the database binds
+nc -vz <tailscale-ip> 5432      # port reachability, before blaming the client
 psql "postgresql://appuser@<tailscale-ip>:5432/app1"
 ```
+
+If `nc` fails, the ACL grant above is missing. If `nc` succeeds and `psql` does
+not exist, install a client rather than changing anything on the server. ICMP is
+denied by the example ACL on purpose, so verify the path with
+`tailscale ping <server>` rather than `ping`.
 
 A GUI client (DBeaver, TablePlus, DataGrip) uses the same values: host is the
 server's `100.x` tailscale address, port `5432`, user `APPDB_APP_USER`, password
