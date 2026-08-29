@@ -51,9 +51,9 @@ normalize_profiles() {
 
   for profile in $(printf '%s' "$raw" | tr ',' ' '); do
     case "$profile" in
-      dns|mgmt|chat|env) ;;
+      dns|mgmt|chat|env|db) ;;
       *)
-        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env."
+        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env, db."
         ;;
     esac
 
@@ -75,6 +75,32 @@ require_compose_profile_support() {
   [ -n "$LOCALCLOUD_PROFILES" ] || return 0
   if ! "$PODMAN_COMPOSE_BIN" --help 2>&1 | grep -q -- '--profile'; then
     fail "$PODMAN_COMPOSE_BIN does not support --profile, but LOCALCLOUD_PROFILES='${LOCALCLOUD_PROFILES}' is set. Upgrade to podman-compose >= 1.1.0 (for example 'pipx install podman-compose') or clear LOCALCLOUD_PROFILES in .env."
+  fi
+}
+
+# The db profile's port mapping uses the required-variable form
+# "${TAILSCALE_IP:?...}" so that an empty value is a hard failure instead of a
+# bind on every interface. A podman-compose that does not implement that form
+# would substitute empty and silently disarm the guard -- the mapping would look
+# correct in the file while protecting nothing. Probe for it the same way
+# profile support is probed, rather than comparing version strings.
+require_compose_required_var_support() {
+  profile_enabled db || return 0
+  local probe rendered
+  probe="$(mktemp -d)"
+  cat > "$probe/docker-compose.yml" <<'PROBE'
+services:
+  probe:
+    image: localhost/localcloud-probe
+    ports:
+      - "${LOCALCLOUD_PROBE_UNSET:?required}:1:1"
+PROBE
+  : > "$probe/.env"
+  rendered=0
+  ( cd "$probe" && LOCALCLOUD_PROBE_UNSET= "$PODMAN_COMPOSE_BIN" -f docker-compose.yml config ) >/dev/null 2>&1 && rendered=1
+  rm -rf "$probe"
+  if [ "$rendered" -eq 1 ]; then
+    fail "$PODMAN_COMPOSE_BIN does not implement the \${VAR:?message} form, so the db profile's Tailscale-only bind guard would silently fall back to binding every interface. Upgrade podman-compose (for example 'pipx install podman-compose') or remove 'db' from LOCALCLOUD_PROFILES."
   fi
 }
 
@@ -143,6 +169,7 @@ Optional services via LOCALCLOUD_PROFILES (comma-separated):
   mgmt -> Portainer (requires PODMAN_SOCKET_PATH)
   chat -> Mattermost + PostgreSQL (requires MATTERMOST_DB_PASSWORD and MATTERMOST_SUBDOMAIN)
   env  -> Infisical env store, Tier B only (requires TAILSCALE_ENABLED=true plus INFISICAL_ENCRYPTION_KEY, INFISICAL_AUTH_SECRET, INFISICAL_DB_PASSWORD)
+  db   -> Application database (PostgreSQL + Adminer), Tier B only (requires TAILSCALE_ENABLED=true plus the APPDB_* values in .env.example)
 MSG
   exit 0
 fi
@@ -199,6 +226,20 @@ if profile_enabled env; then
   require_env_value INFISICAL_ENCRYPTION_KEY
   require_env_value INFISICAL_AUTH_SECRET
 fi
+if profile_enabled db; then
+  # Tier B is defined by its transport. Without Tailscale there is no address to
+  # bind to, and the compose mapping would fall back to every interface -- which
+  # is exactly the exposure this tier exists to prevent. Fail before anything
+  # starts, and name the fix rather than only the symptom.
+  if [ "$TAILSCALE_ENABLED" != "true" ]; then
+    fail "LOCALCLOUD_PROFILES includes 'db', but TAILSCALE_ENABLED is not 'true'. The application database is a Private (Tier B) service: it is reachable only over Tailscale and must never be published to the LAN or through Cloudflare. Complete deployment.md section 13 (Private Tier), set TAILSCALE_ENABLED=true, then run ./install.sh again."
+  fi
+  require_env_value APPDB_SUPERUSER_PASSWORD
+  require_env_value APPDB_APP_USER
+  require_env_value APPDB_APP_PASSWORD
+  require_env_value APPDB_DATABASES
+  require_compose_required_var_support
+fi
 
 check_tailscale
 
@@ -217,7 +258,8 @@ fi
 info "Creating private data directories"
 mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
          ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps} \
-         ./data/infisical/{postgres,redis,db-dumps}
+         ./data/infisical/{postgres,redis,db-dumps} \
+         ./data/appdb/{postgres,db-dumps}
 # Privacy boundary: ./data itself is host-user owned and 0700, so no other
 # host user can traverse it. Individual top-level dirs may be owned by
 # rootless Podman subuids on migrated installs - uid isolation already covers
@@ -279,6 +321,15 @@ case "$BACKUP_DEST_PATH" in
     ;;
 esac
 
+# restic lives in the backup container, so backups run without it on the host --
+# but restore.sh needs the host binary and exits on its first check without one.
+# That combination hides itself: backups keep succeeding, and the gap only
+# surfaces during a restore, which is the worst moment to discover it. Warn
+# rather than fail: nothing about installing or running the stack needs it.
+if ! command -v restic >/dev/null 2>&1; then
+  info "WARNING: restic is not installed on this host. Backups still run (the sidecar carries its own), but ./restore.sh cannot run and disaster recovery would stall. Fix with: sudo apt install -y restic"
+fi
+
 info "Enabling rootless Podman socket and user service"
 loginctl enable-linger "$USER"
 systemctl --user enable --now podman.socket
@@ -320,8 +371,16 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable "$SERVICE_NAME"
 
+# Naming every profile here is what stops a just-disabled optional service from
+# staying up. The db profile is only named once an address is known, because
+# rendering it without one trips its own bind guard -- correct behavior, but a
+# confusing way for a teardown to fail.
+CLEANUP_PROFILE_ARGS=(--profile dns --profile mgmt --profile chat --profile env)
+if [ -n "$TAILSCALE_IP" ]; then
+  CLEANUP_PROFILE_ARGS+=(--profile db)
+fi
 info "Stopping any existing LocalCloud containers before applying selected profiles"
-if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat --profile env down --remove-orphans; then
+if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" "${CLEANUP_PROFILE_ARGS[@]}" down --remove-orphans; then
   info "WARNING: pre-start cleanup exited non-zero (normal when nothing was running)."
 fi
 
@@ -331,6 +390,17 @@ fi
 info "Pre-pulling service images"
 if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} pull; then
   info "WARNING: image pre-pull exited non-zero (the locally built backup image has nothing to pull)."
+fi
+
+# `up -d` reuses an existing image for a build: service without rebuilding, and
+# `pull` does nothing for one. Together that means edits under ./backup never
+# reach the running container: the installer reports success, the container keeps
+# running whatever was built months ago, and the backup that is actually taken is
+# not the backup the repository describes. Build explicitly, and fail rather than
+# start a stale one.
+info "Building local service images"
+if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} build; then
+  fail "Failed to build the local service images (./backup). Refusing to start, because starting would silently reuse the previously built image and run backup code this checkout does not contain."
 fi
 
 # Advisory: catches unit-file regressions before the restart hides them behind
@@ -346,6 +416,16 @@ if ! systemctl --user restart "$SERVICE_NAME"; then
   systemctl --user status "$SERVICE_NAME" --no-pager || true
   journalctl --user -u "$SERVICE_NAME" -n 30 --no-pager || true
   fail "Failed to start $SERVICE_NAME. Diagnostics above."
+fi
+
+# Check the container that actually runs, not the image we think we built. A
+# stale backup container reports healthy while taking a different backup than
+# this checkout describes -- unencrypted and unversioned, in the case this was
+# found in. Cheap to verify, invisible otherwise.
+if podman ps --format '{{.Names}}' | grep -qx backup; then
+  if ! podman exec backup sh -c 'command -v restic >/dev/null 2>&1'; then
+    info "WARNING: the running backup container has no restic, so it is not taking encrypted restic snapshots. The image is stale. Fix with: podman-compose -f docker-compose.yml build --no-cache backup && podman-compose -f docker-compose.yml up -d backup"
+  fi
 fi
 
 if [ "$TAILSCALE_ENABLED" = "true" ]; then

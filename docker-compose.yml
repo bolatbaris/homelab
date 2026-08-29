@@ -169,7 +169,7 @@ services:
     # pg_isready and skips the run when the database is not reachable yet.
     depends_on:
       - mattermost-postgres
-    command: ["/bin/sh", "/usr/local/bin/mattermost-db-dump.sh"]
+    command: ["/bin/sh", "/usr/local/bin/pg-dump.sh"]
     environment:
       - TZ=${TZ:-UTC}
       - PGHOST=mattermost-postgres
@@ -177,11 +177,16 @@ services:
       - PGUSER=mmuser
       - PGPASSWORD=${MATTERMOST_DB_PASSWORD}
       - PGDATABASE=mattermost
-      - MATTERMOST_DB_DUMP_HOUR=${MATTERMOST_DB_DUMP_HOUR:-2}
-      - MATTERMOST_DB_DUMP_MINUTE=${MATTERMOST_DB_DUMP_MINUTE:-45}
-      - MATTERMOST_DB_DUMP_KEEP_DAYS=${MATTERMOST_DB_DUMP_KEEP_DAYS:-14}
+      # Single-database mode. With this prefix the filenames are byte-for-byte
+      # what the old mattermost-db-dump.sh produced, so existing installs and
+      # their restore instructions are unaffected.
+      - DB_DUMP_ALL=false
+      - DB_DUMP_PREFIX=mattermost
+      - DB_DUMP_HOUR=${MATTERMOST_DB_DUMP_HOUR:-2}
+      - DB_DUMP_MINUTE=${MATTERMOST_DB_DUMP_MINUTE:-45}
+      - DB_DUMP_KEEP_DAYS=${MATTERMOST_DB_DUMP_KEEP_DAYS:-14}
     volumes:
-      - ./backup/mattermost-db-dump.sh:/usr/local/bin/mattermost-db-dump.sh:ro
+      - ./backup/pg-dump.sh:/usr/local/bin/pg-dump.sh:ro
       - ./data/mattermost/db-dumps:/dumps
     networks:
       - db-net
@@ -269,7 +274,7 @@ services:
     # skips the run when the database is not reachable yet.
     depends_on:
       - infisical-postgres
-    command: ["/bin/sh", "/usr/local/bin/infisical-db-dump.sh"]
+    command: ["/bin/sh", "/usr/local/bin/pg-dump.sh"]
     environment:
       - TZ=${TZ:-UTC}
       - PGHOST=infisical-postgres
@@ -277,14 +282,107 @@ services:
       - PGUSER=infisical
       - PGPASSWORD=${INFISICAL_DB_PASSWORD}
       - PGDATABASE=infisical
-      - INFISICAL_DB_DUMP_HOUR=${INFISICAL_DB_DUMP_HOUR:-2}
-      - INFISICAL_DB_DUMP_MINUTE=${INFISICAL_DB_DUMP_MINUTE:-30}
-      - INFISICAL_DB_DUMP_KEEP_DAYS=${INFISICAL_DB_DUMP_KEEP_DAYS:-14}
+      # Single-database mode. The shared pg-dump.sh keeps the mattermost-dump
+      # filename convention, so dumps land as infisical-<ts>.dump plus
+      # infisical-latest.dump.
+      - DB_DUMP_ALL=false
+      - DB_DUMP_PREFIX=infisical
+      - DB_DUMP_HOUR=${INFISICAL_DB_DUMP_HOUR:-2}
+      - DB_DUMP_MINUTE=${INFISICAL_DB_DUMP_MINUTE:-15}
+      - DB_DUMP_KEEP_DAYS=${INFISICAL_DB_DUMP_KEEP_DAYS:-14}
     volumes:
-      - ./backup/infisical-db-dump.sh:/usr/local/bin/infisical-db-dump.sh:ro
+      - ./backup/pg-dump.sh:/usr/local/bin/pg-dump.sh:ro
       - ./data/infisical/db-dumps:/dumps
     networks:
       - env-net
+
+  # --- Private tier (Tailscale only) -----------------------------------------
+  # Application database for first-party backends. SECURITY.md Tier B: reachable
+  # over Tailscale and from appdb-net, never from the LAN and never through
+  # Cloudflare. Deliberately separate from mattermost-postgres so the chat
+  # profile, its Postgres major version, and its restore blast radius stay
+  # independent of application data.
+  appdb:
+    image: ${APPDB_IMAGE:-docker.io/postgres:17-alpine}
+    container_name: appdb
+    profiles:
+      - db
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      - POSTGRES_USER=${APPDB_SUPERUSER:-postgres}
+      - POSTGRES_PASSWORD=${APPDB_SUPERUSER_PASSWORD}
+      - POSTGRES_DB=postgres
+      # Read by db/initdb/10-appdb-seed.sh, which the entrypoint runs only when
+      # the data directory is empty.
+      - APPDB_APP_USER=${APPDB_APP_USER}
+      - APPDB_APP_PASSWORD=${APPDB_APP_PASSWORD}
+      - APPDB_DATABASES=${APPDB_DATABASES}
+    volumes:
+      - ./data/appdb/postgres:/var/lib/postgresql/data
+      - ./db/initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      # An empty TAILSCALE_IP would render ":5432:5432", which Podman reads as
+      # every interface -- putting the database on the LAN. The required-variable
+      # form turns that into a hard failure. install.sh checks the same thing
+      # earlier with a friendlier message, and CI tests that this still fails.
+      - "${TAILSCALE_IP:?TAILSCALE_IP is empty. The db profile is Tailscale-only (SECURITY.md Tier B). Set TAILSCALE_ENABLED=true and run ./install.sh}:${APPDB_PORT:-5432}:5432"
+    # Kept for `podman ps` visibility and manual `podman healthcheck run` only;
+    # deliberately not used to gate startup ordering - see mattermost above.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APPDB_SUPERUSER:-postgres} -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - appdb-net
+
+  appdb-adminer:
+    image: ${ADMINER_IMAGE:-docker.io/library/adminer:latest}
+    container_name: appdb-adminer
+    profiles:
+      - db
+    restart: unless-stopped
+    # Plain ordering, not condition: service_healthy - see mattermost above.
+    depends_on:
+      - appdb
+    environment:
+      - TZ=${TZ:-UTC}
+      - ADMINER_DEFAULT_SERVER=appdb
+    ports:
+      - "${TAILSCALE_IP:?TAILSCALE_IP is empty. The db profile is Tailscale-only (SECURITY.md Tier B). Set TAILSCALE_ENABLED=true and run ./install.sh}:${ADMINER_PORT:-8081}:8080"
+    networks:
+      - appdb-net
+
+  appdb-dump:
+    image: ${APPDB_IMAGE:-docker.io/postgres:17-alpine}
+    container_name: appdb-dump
+    profiles:
+      - db
+    restart: unless-stopped
+    # Plain ordering; pg-dump.sh probes with pg_isready and skips a run when the
+    # database is not reachable yet.
+    depends_on:
+      - appdb
+    command: ["/bin/sh", "/usr/local/bin/pg-dump.sh"]
+    environment:
+      - TZ=${TZ:-UTC}
+      - PGHOST=appdb
+      - PGPORT=5432
+      - PGUSER=${APPDB_SUPERUSER:-postgres}
+      - PGPASSWORD=${APPDB_SUPERUSER_PASSWORD}
+      - PGDATABASE=postgres
+      # Every application database plus the role/password globals, because this
+      # server hosts an unknown number of databases.
+      - DB_DUMP_ALL=true
+      - DB_DUMP_HOUR=${APPDB_DUMP_HOUR:-2}
+      - DB_DUMP_MINUTE=${APPDB_DUMP_MINUTE:-30}
+      - DB_DUMP_KEEP_DAYS=${APPDB_DUMP_KEEP_DAYS:-14}
+    volumes:
+      - ./backup/pg-dump.sh:/usr/local/bin/pg-dump.sh:ro
+      - ./data/appdb/db-dumps:/dumps
+    networks:
+      - appdb-net
 
   backup:
     build: ./backup
@@ -308,6 +406,7 @@ services:
       - ./data/adguard:/sources/adguard:ro
       - ./data/mattermost:/sources/mattermost:ro
       - ./data/infisical:/sources/infisical:ro
+      - ./data/appdb:/sources/appdb:ro
       # Mount future service data volumes read-only under /sources/<service>
       # e.g. - ./data/<service>:/sources/<service>:ro
     network_mode: none
@@ -322,5 +421,16 @@ networks:
     internal: true
   dns-net:
     driver: bridge
-  env-net:
+  # Private tier. internal: true removes egress; the host still reaches in
+  # through the published tailscale0 port (verified on rootless Podman 5.8.3
+  # with netavark). Future first-party backends join this network and reach the
+  # database at appdb:5432 rather than through the published port.
+  appdb-net:
     driver: bridge
+    internal: true
+  env-net:
+    # Same private-tier rule as appdb-net: no egress, host still reaches the
+    # published tailscale0 port. The env store's own PostgreSQL never leaves
+    # this network.
+    driver: bridge
+    internal: true
