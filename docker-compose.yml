@@ -240,6 +240,10 @@ services:
     # NO ports: ever - the env-store database is internal-only, never exposed
 
   infisical-redis:
+    # Convention: stateful services are always per-feature and name-prefixed
+    # (mattermost-postgres, infisical-postgres, infisical-redis). A future
+    # service needing Redis gets its own instance (e.g. <app>-redis on its own
+    # network), never this one - the same rule already applied to PostgreSQL.
     image: ${INFISICAL_REDIS_IMAGE:-docker.io/redis:7-alpine}
     container_name: infisical-redis
     profiles:

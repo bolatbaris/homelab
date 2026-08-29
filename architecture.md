@@ -36,7 +36,7 @@ Current transitional binds: AdGuard binds DNS and UI to `LAN_IP`; Gitea SSH bind
 
 ## Data Model
 
-All persistent service data lives under `./data/<service>`. This keeps backup and restore behavior predictable.
+All persistent service data lives under `./data/<service>`. This keeps backup and restore behavior predictable. Stateful add-ons follow the same rule at the service level: each feature gets its own name-prefixed instance (`mattermost-postgres`, `infisical-postgres`, `infisical-redis`) and profiles never share a database or cache.
 
 Important paths:
 
