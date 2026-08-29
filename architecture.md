@@ -19,7 +19,7 @@ LocalCloud Stack is an installable self-hosted stack for private services on use
 | `dns-net` | AdGuard DNS/UI |
 | `mgmt-net` | Portainer and Podman socket access |
 | `db-net` | internal database traffic |
-| `env-net` | Infisical env store and its PostgreSQL (Tier B) |
+| `env-net` | Infisical env store and its PostgreSQL + Redis (Tier B) |
 | `tailscale0` | host interface for Tier B (Private) service binds via Tailscale |
 
 The backup container uses `network_mode: none`.

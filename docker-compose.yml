@@ -196,10 +196,14 @@ services:
     # healthcheck-as-systemd-user-timer lesson as mattermost above.
     depends_on:
       - infisical-postgres
+      - infisical-redis
     environment:
       - ENCRYPTION_KEY=${INFISICAL_ENCRYPTION_KEY}
       - AUTH_SECRET=${INFISICAL_AUTH_SECRET}
       - DB_CONNECTION_URI=postgres://infisical:${INFISICAL_DB_PASSWORD}@infisical-postgres:5432/infisical?sslmode=disable
+      # Hard requirement of the current Infisical image, not an optional
+      # cache: startup validation refuses to run without it.
+      - REDIS_URL=redis://infisical-redis:6379
       - SITE_URL=${INFISICAL_SITE_URL:-http://localhost:8080}
     ports:
       # Tier B (Private): reachable only through Tailscale. The loopback
@@ -234,6 +238,22 @@ services:
     networks:
       - env-net
     # NO ports: ever - the env-store database is internal-only, never exposed
+
+  infisical-redis:
+    image: ${INFISICAL_REDIS_IMAGE:-docker.io/redis:7-alpine}
+    container_name: infisical-redis
+    profiles:
+      - env
+    restart: unless-stopped
+    # Queue/rate-limit store for Infisical. appendonly keeps pending jobs
+    # across restarts; the official entrypoint chowns /data itself, so no
+    # rootless uid mapping is needed here.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/infisical/redis:/data
+    networks:
+      - env-net
+    # NO ports: internal-only, reachable only by infisical on env-net
 
   infisical-db-dump:
     image: ${POSTGRES_IMAGE:-docker.io/postgres:15-alpine}

@@ -217,7 +217,7 @@ fi
 info "Creating private data directories"
 mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
          ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps} \
-         ./data/infisical/{postgres,db-dumps}
+         ./data/infisical/{postgres,redis,db-dumps}
 # Privacy boundary: ./data itself is host-user owned and 0700, so no other
 # host user can traverse it. Individual top-level dirs may be owned by
 # rootless Podman subuids on migrated installs - uid isolation already covers

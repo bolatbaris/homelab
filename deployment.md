@@ -170,7 +170,7 @@ Expected base services:
 - n8n
 - backup
 
-Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`), `infisical` + `infisical-postgres` + `infisical-db-dump` (`env`). When the `dns` profile is enabled, also verify AdGuard:
+Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`), `infisical` + `infisical-postgres` + `infisical-redis` + `infisical-db-dump` (`env`). When the `dns` profile is enabled, also verify AdGuard:
 
 ```sh
 dig @"$LAN_IP" example.com
@@ -201,7 +201,7 @@ podman-compose -f docker-compose.yml --profile chat up -d mattermost-postgres ma
 Infisical (requires Tailscale - section 13 first):
 
 ```sh
-podman-compose -f docker-compose.yml --profile env up -d infisical-postgres infisical-db-dump infisical
+podman-compose -f docker-compose.yml --profile env up -d infisical-postgres infisical-redis infisical-db-dump infisical
 ```
 
 ## 10. Restore
@@ -249,7 +249,7 @@ systemctl --user stop localcloud.service
 systemctl --user reset-failed localcloud.service
 podman rm -f cloudflared glances gitea n8n adguard backup \
              mattermost mattermost-postgres mattermost-postgres-dump \
-             infisical infisical-postgres infisical-db-dump
+             infisical infisical-postgres infisical-redis infisical-db-dump
 ```
 
 Anything still listed by `podman ps -a --filter status=stopping` needs Podman's
@@ -559,7 +559,7 @@ Optional profile `env`. [Infisical](https://infisical.com) is the stack's enviro
    `INFISICAL_ENCRYPTION_KEY` belongs with `RESTIC_PASSWORD` and `N8N_ENCRYPTION_KEY`: keep it **off** the backup disk. A restored snapshot is unreadable without it.
 3. Enable: add `env` to `LOCALCLOUD_PROFILES` and rerun `./install.sh`.
 
-The profile brings `infisical` (bound to `${TAILSCALE_IP}:${INFISICAL_PORT:-8080}`), `infisical-postgres` (no ports), and `infisical-db-dump` (logical `pg_dump` at 02:30 by default, before the 03:00 restic snapshot).
+The profile brings `infisical` (bound to `${TAILSCALE_IP}:${INFISICAL_PORT:-8080}`), `infisical-postgres` (no ports), `infisical-redis` (no ports; a hard requirement of the current Infisical image, with append-only persistence), and `infisical-db-dump` (logical `pg_dump` at 02:30 by default, before the 03:00 restic snapshot).
 
 ### First-Run Setup
 

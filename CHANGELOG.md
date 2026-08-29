@@ -18,6 +18,8 @@ Notable changes to LocalCloud Stack. Format loosely follows
   and an `infisical-db-dump` sidecar writing a logical `pg_dump` to
   `./data/infisical/db-dumps` before the nightly restic snapshot - the
   mattermost dump pattern, applied to the most sensitive database in the stack.
+  The current Infisical image refuses to start without Redis, so the profile
+  also ships `infisical-redis` (append-only persistence, no ports).
 - `backup-automount.sh` - makes the backup disk mount itself at boot, so backups
   survive a power cut with nobody present. Handles a plain filesystem (a
   UUID-keyed `fstab` entry) and a LUKS-encrypted disk (root-only keyfile, LUKS
