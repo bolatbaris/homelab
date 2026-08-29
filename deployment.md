@@ -52,7 +52,7 @@ Required production values:
 - `RESTIC_PASSWORD=<openssl rand -base64 48>`
 - `N8N_ENCRYPTION_KEY=<openssl rand -hex 32>`
 
-Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`.
+Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`, `env`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`, and the `INFISICAL_*` keys only for `env` (which also requires `TAILSCALE_ENABLED=true` - see sections 13 and 14).
 
 ## 3. Static LAN IP
 
@@ -170,7 +170,7 @@ Expected base services:
 - n8n
 - backup
 
-Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`). When the `dns` profile is enabled, also verify AdGuard:
+Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`), `infisical` + `infisical-postgres` + `infisical-db-dump` (`env`). When the `dns` profile is enabled, also verify AdGuard:
 
 ```sh
 dig @"$LAN_IP" example.com
@@ -198,6 +198,12 @@ Mattermost:
 podman-compose -f docker-compose.yml --profile chat up -d mattermost-postgres mattermost-postgres-dump mattermost
 ```
 
+Infisical (requires Tailscale - section 13 first):
+
+```sh
+podman-compose -f docker-compose.yml --profile env up -d infisical-postgres infisical-db-dump infisical
+```
+
 ## 10. Restore
 
 The helper restores with the correct rootless-Podman ownership and keeps your current data aside:
@@ -222,7 +228,7 @@ podman unshare mv ./.restore/sources/<service> ./data/<service>
 podman-compose -f docker-compose.yml $PROFILE_ARGS up -d
 ```
 
-Restore requires the **same** `.env` secrets as the original deployment - especially `RESTIC_PASSWORD` (to open the repo) and `N8N_ENCRYPTION_KEY` / `MATTERMOST_DB_PASSWORD` (to decrypt restored credentials).
+Restore requires the **same** `.env` secrets as the original deployment - especially `RESTIC_PASSWORD` (to open the repo) and `N8N_ENCRYPTION_KEY` / `MATTERMOST_DB_PASSWORD` / `INFISICAL_ENCRYPTION_KEY` (to decrypt restored credentials).
 
 The scheduled backup is file-level. For the strongest restore consistency before major upgrades, stop write-heavy services, run `podman exec backup /usr/local/bin/backup.sh`, then start the services again.
 
@@ -242,7 +248,8 @@ would also destroy unrelated containers on the host:
 systemctl --user stop localcloud.service
 systemctl --user reset-failed localcloud.service
 podman rm -f cloudflared glances gitea n8n adguard backup \
-             mattermost mattermost-postgres mattermost-postgres-dump
+             mattermost mattermost-postgres mattermost-postgres-dump \
+             infisical infisical-postgres infisical-db-dump
 ```
 
 Anything still listed by `podman ps -a --filter status=stopping` needs Podman's
@@ -280,7 +287,7 @@ Then clear the leftover pod and networks and re-run the installer:
 ```sh
 podman pod ps
 podman pod rm -f <pod-id>
-podman network rm homelab_edge-net homelab_dns-net homelab_mgmt-net homelab_db-net
+podman network rm homelab_edge-net homelab_dns-net homelab_mgmt-net homelab_db-net homelab_env-net
 ./install.sh
 ```
 
@@ -515,7 +522,7 @@ Optional. Enables the Private (Tier B) exposure tier - see [SECURITY.md](SECURIT
    TAILSCALE_ENABLED=true
    ```
 
-   `TAILSCALE_IP` can stay empty: `./install.sh` detects the tailscale0 IPv4, validates it, and writes it back to `.env` for Tier B service binds. A pre-set `TAILSCALE_IP` must match the detected address or the installer fails.
+   `TAILSCALE_IP` can stay empty: `./install.sh` detects the tailscale0 IPv4, validates it, and writes it back to `.env` for Tier B service binds. A pre-set `TAILSCALE_IP` must match the detected address or the installer fails. `TAILSCALE_ENABLED=true` is **required** for the `env` profile - see section 14.
 
 4. Rerun `./install.sh`. The installer fails closed when `TAILSCALE_ENABLED=true` but the `tailscale` binary is missing or the node has no tailscale0 address.
 
@@ -533,3 +540,62 @@ ss -tlnp | grep <port>   # foreign address must be the 100.x tailscale IP, never
 ```
 
 Rollback: `sudo tailscale down`, remove the ufw rule, set `TAILSCALE_ENABLED=false`, rerun `./install.sh`.
+
+## 14. Env Store (Infisical)
+
+Optional profile `env`. [Infisical](https://infisical.com) is the stack's environment/secret store: projects keep no env files of their own and pull their variables at runtime - per project and per environment (dev, test, qa, prod). It is Tier B (Private): reachable **only through Tailscale**, bound to the tailscale0 address, and deliberately never attached to the tunnel network (`env-net` only - see [SECURITY.md](SECURITY.md)).
+
+### Prerequisites
+
+1. Section 13 complete: Tailscale installed on the host and `TAILSCALE_ENABLED=true` in `.env`. The installer fails closed when `env` is enabled without the Private transport.
+2. Keys in `.env`:
+
+   ```
+   INFISICAL_ENCRYPTION_KEY=<openssl rand -hex 16>    # encrypts every stored secret
+   INFISICAL_AUTH_SECRET=<openssl rand -base64 32>    # signs session JWTs
+   INFISICAL_DB_PASSWORD=<openssl rand -hex 32>       # hex: it is embedded in the postgres:// URI
+   ```
+
+   `INFISICAL_ENCRYPTION_KEY` belongs with `RESTIC_PASSWORD` and `N8N_ENCRYPTION_KEY`: keep it **off** the backup disk. A restored snapshot is unreadable without it.
+3. Enable: add `env` to `LOCALCLOUD_PROFILES` and rerun `./install.sh`.
+
+The profile brings `infisical` (bound to `${TAILSCALE_IP}:${INFISICAL_PORT:-8080}`), `infisical-postgres` (no ports), and `infisical-db-dump` (logical `pg_dump` at 02:30 by default, before the 03:00 restic snapshot).
+
+### First-Run Setup
+
+1. From an enrolled device, open `http://<tailscale-ip>:8080` and create the admin account.
+2. Create a project and its environments (`dev`, `test`, `qa`, `prod`).
+3. Create machine identities (Service Auth) per project/environment - these client credentials are what CI and services use to pull secrets programmatically. Scope each identity to the narrowest project/environment it needs.
+4. Org membership is invite-based: accounts created without an invite see nothing. Tailnet ACLs decide who can even reach the login page - grant port `8080` only to the devices that need it (see the ACL example in section 13).
+
+### Client Usage From Dev Devices
+
+On any enrolled device (the CLI defaults to Infisical cloud, so point it at this instance):
+
+```sh
+infisical login --domain http://<tailscale-ip>:8080
+infisical run --env prod -- <your app start command>   # secrets injected at runtime
+```
+
+`INFISICAL_API_URL` (env var) or the `domain` field in `.infisical.json` (from `infisical init`) are alternatives to `--domain`. Older CLI versions ignored the flag on login - upgrade if it does not seem to stick.
+
+### Optional HTTPS
+
+Tailscale already encrypts the transport (WireGuard), so plain HTTP on the tailnet is the baseline. For a valid certificate and clean URLs, front the store with `tailscale serve` (see `tailscale serve --help` for your installed version's syntax), then set `INFISICAL_SITE_URL=https://infisical.<your-tailnet>.ts.net` in `.env` and rerun `./install.sh`.
+
+### Verify
+
+```sh
+podman ps --format "table {{.Names}}\t{{.Status}}" | grep infisical
+ss -tlnp | grep "${INFISICAL_PORT:-8080}"   # foreign address: the 100.x tailscale IP, never 0.0.0.0
+podman logs infisical 2>&1 | tail -20
+ls -lh ./data/infisical/db-dumps/           # infisical-latest.dump after the first dump run
+```
+
+Negative test from a **non-tailnet** device: `curl -m 3 http://<lan-ip>:8080` must time out or refuse.
+
+### Restore Notes
+
+The generic `./restore.sh` flow covers `./data/infisical` automatically. The restored PostgreSQL directory is supplemented by `infisical-latest.dump` (restore with `pg_restore` against a clean `infisical-postgres` container if the raw data restore ever fails). Decryption of the stored secrets requires the same `INFISICAL_ENCRYPTION_KEY` as when they were written - that is why it lives off the backup disk.
+
+Rollback: remove `env` from `LOCALCLOUD_PROFILES`, rerun `./install.sh`. The containers stop and `./data/infisical` stays in place.

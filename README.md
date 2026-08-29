@@ -31,6 +31,7 @@ Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-sepa
 | `dns` | AdGuard Home - LAN DNS + ad-blocking. The installer reconfigures the host resolver (`/etc/resolv.conf`, systemd-resolved, port 53). | off |
 | `mgmt` | Portainer | off |
 | `chat` | Mattermost + Postgres + logical chat-history dumps | off |
+| `env` | Infisical - encrypted env/secret store for projects (dev/test/qa/prod). Tier B only: reachable through Tailscale, never through the tunnel; requires `TAILSCALE_ENABLED=true`. | off |
 
 ## Requirements
 
@@ -66,7 +67,7 @@ Minimum required `.env` values:
 
 Enable the Private (Tier B) transport with `TAILSCALE_ENABLED=true` after installing Tailscale on the host (see [deployment.md section 13](deployment.md)); `install.sh` detects the tailscale0 address and writes it to `TAILSCALE_IP`.
 
-Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). Valid values are `dns`, `mgmt`, and `chat`; invalid values fail the installer. `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` and `MATTERMOST_SUBDOMAIN` are required only for the `chat` profile.
+Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). Valid values are `dns`, `mgmt`, `chat`, and `env`; invalid values fail the installer. `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` and `MATTERMOST_SUBDOMAIN` are required only for the `chat` profile. The `env` profile (Infisical env store) additionally requires `TAILSCALE_ENABLED=true` plus `INFISICAL_ENCRYPTION_KEY`, `INFISICAL_AUTH_SECRET`, and `INFISICAL_DB_PASSWORD` - see [deployment.md section 14](deployment.md).
 
 Generate secrets:
 
@@ -121,7 +122,7 @@ When `BACKUP_REQUIRE_MOUNT=true`, `./install.sh` fails unless `${BACKUP_DEST_PAT
 
 When the `chat` profile is enabled, `mattermost-postgres-dump` writes a logical PostgreSQL dump to `./data/mattermost/db-dumps` at `02:45` by default, before the restic snapshot. That dump contains Mattermost message history in a restore-friendly format; restic also backs up the raw PostgreSQL data directory.
 
-Keep `RESTIC_PASSWORD` and `N8N_ENCRYPTION_KEY` **off** the backup disk (for example in a password manager). Without them a restored backup cannot be decrypted.
+Keep `RESTIC_PASSWORD`, `N8N_ENCRYPTION_KEY`, and `INFISICAL_ENCRYPTION_KEY` **off** the backup disk (for example in a password manager). Without them a restored backup cannot be decrypted.
 
 Restore the latest snapshot and bring the stack back up:
 

@@ -9,7 +9,7 @@ Every service belongs to exactly one exposure tier. The tier decides how it is p
 | Tier | Name | Transport | Binding | Identity | Examples |
 |---|---|---|---|---|---|
 | A | Public | Cloudflare Tunnel | `edge-net` only | per-hostname Cloudflare Access policy | gitea (HTTP), n8n, glances, mattermost* |
-| B | Private | Tailscale (tailnet) | tailscale0 address only | tailnet membership + ACL + service auth | planned: postgres, env store |
+| B | Private | Tailscale (tailnet) | tailscale0 address only | tailnet membership + ACL + service auth | infisical (env store); planned: postgres |
 | C | Internal | SSH / `podman exec` | loopback or no published port | host shell access | mattermost-postgres, backup, portainer* |
 
 \* profile-gated optional services.
@@ -37,7 +37,7 @@ Tier B - Private:
 - Bind to the tailscale0 address, or publish no host port at all. Never bind to `0.0.0.0`, `::`, or a bare port.
 - ufw allows inbound on `tailscale0` only; the public interface stays default-deny.
 - Tailscale ACLs grant only the required ports from the required devices.
-- Planned services of this tier: PostgreSQL, env/secret store, and Gitea SSH (moved from its LAN bind).
+- Current Tier B service: Infisical (the `env` profile) binds to the tailscale0 address and is never attached to the tunnel network. Planned: PostgreSQL; Gitea SSH moves here from its LAN bind.
 
 Tier C - Internal:
 
@@ -89,9 +89,12 @@ Generate required secrets:
 openssl rand -hex 32      # N8N_ENCRYPTION_KEY
 openssl rand -base64 48   # RESTIC_PASSWORD
 openssl rand -hex 32      # MATTERMOST_DB_PASSWORD if enabling --profile chat
+openssl rand -hex 16      # INFISICAL_ENCRYPTION_KEY (16-byte hex) if enabling --profile env
+openssl rand -base64 32   # INFISICAL_AUTH_SECRET if enabling --profile env
+openssl rand -hex 32      # INFISICAL_DB_PASSWORD if enabling --profile env
 ```
 
-Prefer hex for values embedded in connection strings. Store `N8N_ENCRYPTION_KEY` and `RESTIC_PASSWORD` outside the backup disk. Losing either can make data unrecoverable.
+Prefer hex for values embedded in connection strings. Store `N8N_ENCRYPTION_KEY`, `RESTIC_PASSWORD`, and `INFISICAL_ENCRYPTION_KEY` outside the backup disk. Losing any of them can make data unrecoverable.
 
 ## Backups
 

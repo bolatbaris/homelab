@@ -6,6 +6,18 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- `env` profile - Infisical as the stack's environment/secret store (Tier B,
+  Private). Projects keep no env files and pull per-project, per-environment
+  variables (dev/test/qa/prod) at runtime from a central store reachable only
+  through Tailscale: `infisical` binds to the tailscale0 address, is never
+  attached to the tunnel network (`env-net` only), and falls back to loopback
+  if `TAILSCALE_IP` is ever empty, so it cannot degrade into a 0.0.0.0 bind.
+  The installer fails closed unless `TAILSCALE_ENABLED=true` and the three new
+  secrets (`INFISICAL_ENCRYPTION_KEY`, `INFISICAL_AUTH_SECRET`,
+  `INFISICAL_DB_PASSWORD`) are set. Ships with `infisical-postgres` (no ports)
+  and an `infisical-db-dump` sidecar writing a logical `pg_dump` to
+  `./data/infisical/db-dumps` before the nightly restic snapshot - the
+  mattermost dump pattern, applied to the most sensitive database in the stack.
 - `backup-automount.sh` - makes the backup disk mount itself at boot, so backups
   survive a power cut with nobody present. Handles a plain filesystem (a
   UUID-keyed `fstab` entry) and a LUKS-encrypted disk (root-only keyfile, LUKS

@@ -51,9 +51,9 @@ normalize_profiles() {
 
   for profile in $(printf '%s' "$raw" | tr ',' ' '); do
     case "$profile" in
-      dns|mgmt|chat) ;;
+      dns|mgmt|chat|env) ;;
       *)
-        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat."
+        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env."
         ;;
     esac
 
@@ -142,6 +142,7 @@ Optional services via LOCALCLOUD_PROFILES (comma-separated):
   dns  -> AdGuard Home (the installer will reconfigure the host resolver)
   mgmt -> Portainer (requires PODMAN_SOCKET_PATH)
   chat -> Mattermost + PostgreSQL (requires MATTERMOST_DB_PASSWORD and MATTERMOST_SUBDOMAIN)
+  env  -> Infisical env store, Tier B only (requires TAILSCALE_ENABLED=true plus INFISICAL_ENCRYPTION_KEY, INFISICAL_AUTH_SECRET, INFISICAL_DB_PASSWORD)
 MSG
   exit 0
 fi
@@ -186,6 +187,18 @@ if profile_enabled chat; then
   require_env_value MATTERMOST_DB_PASSWORD
   require_env_value MATTERMOST_SUBDOMAIN
 fi
+if profile_enabled env; then
+  # The env store is Tier B (Private): its only intended transport is the
+  # tailnet, so enabling it without Tailscale must not silently fall back to
+  # some weaker reach (the compose bind also falls back to loopback, which
+  # would just make the store unusable from other devices).
+  if [ "$TAILSCALE_ENABLED" != "true" ]; then
+    fail "Profile 'env' (Infisical env store) is Tier B (Private) and requires TAILSCALE_ENABLED=true. Complete deployment.md section 13 first, or disable the env profile."
+  fi
+  require_env_value INFISICAL_DB_PASSWORD
+  require_env_value INFISICAL_ENCRYPTION_KEY
+  require_env_value INFISICAL_AUTH_SECRET
+fi
 
 check_tailscale
 
@@ -203,7 +216,8 @@ fi
 
 info "Creating private data directories"
 mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
-         ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps}
+         ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps} \
+         ./data/infisical/{postgres,db-dumps}
 # Privacy boundary: ./data itself is host-user owned and 0700, so no other
 # host user can traverse it. Individual top-level dirs may be owned by
 # rootless Podman subuids on migrated installs - uid isolation already covers
@@ -307,7 +321,7 @@ systemctl --user daemon-reload
 systemctl --user enable "$SERVICE_NAME"
 
 info "Stopping any existing LocalCloud containers before applying selected profiles"
-if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat down --remove-orphans; then
+if ! "$PODMAN_COMPOSE_BIN" -f "$COMPOSE_FILE" --profile dns --profile mgmt --profile chat --profile env down --remove-orphans; then
   info "WARNING: pre-start cleanup exited non-zero (normal when nothing was running)."
 fi
 
