@@ -191,6 +191,111 @@ services:
     networks:
       - db-net
 
+  infisical:
+    image: ${INFISICAL_IMAGE:-docker.io/infisical/infisical:latest}
+    container_name: infisical
+    profiles:
+      - env
+    restart: unless-stopped
+    # Plain ordering, not condition: service_healthy - same Podman
+    # healthcheck-as-systemd-user-timer lesson as mattermost above.
+    depends_on:
+      - infisical-postgres
+      - infisical-redis
+    environment:
+      - ENCRYPTION_KEY=${INFISICAL_ENCRYPTION_KEY}
+      - AUTH_SECRET=${INFISICAL_AUTH_SECRET}
+      - DB_CONNECTION_URI=postgres://infisical:${INFISICAL_DB_PASSWORD}@infisical-postgres:5432/infisical?sslmode=disable
+      # Hard requirement of the current Infisical image, not an optional
+      # cache: startup validation refuses to run without it.
+      - REDIS_URL=redis://infisical-redis:6379
+      - SITE_URL=${INFISICAL_SITE_URL:-http://localhost:8080}
+    ports:
+      # Tier B (Private): reachable only through Tailscale. The loopback
+      # fallback keeps an empty TAILSCALE_IP from degrading into a 0.0.0.0
+      # bind; install.sh additionally fails closed when the env profile is
+      # enabled without TAILSCALE_ENABLED=true.
+      - "${TAILSCALE_IP:-127.0.0.1}:${INFISICAL_PORT:-8080}:8080"
+    networks:
+      - env-net
+    # Deliberately NOT on edge-net: the tunnel must have no route to the
+    # env store. See SECURITY.md Tier B.
+
+  infisical-postgres:
+    image: ${POSTGRES_IMAGE:-docker.io/postgres:15-alpine}
+    container_name: infisical-postgres
+    profiles:
+      - env
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=infisical
+      - POSTGRES_PASSWORD=${INFISICAL_DB_PASSWORD}
+      - POSTGRES_DB=infisical
+    volumes:
+      - ./data/infisical/postgres:/var/lib/postgresql/data
+    # Kept for `podman ps` visibility and manual `podman healthcheck run`,
+    # deliberately not used to gate startup ordering - see mattermost above.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U infisical -d infisical"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - env-net
+    # NO ports: ever - the env-store database is internal-only, never exposed
+
+  infisical-redis:
+    # Convention: stateful services are always per-feature and name-prefixed
+    # (mattermost-postgres, infisical-postgres, infisical-redis). A future
+    # service needing Redis gets its own instance (e.g. <app>-redis on its own
+    # network), never this one - the same rule already applied to PostgreSQL.
+    image: ${INFISICAL_REDIS_IMAGE:-docker.io/redis:7-alpine}
+    container_name: infisical-redis
+    profiles:
+      - env
+    restart: unless-stopped
+    # Queue/rate-limit store for Infisical. appendonly keeps pending jobs
+    # across restarts; the official entrypoint chowns /data itself, so no
+    # rootless uid mapping is needed here.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/infisical/redis:/data
+    networks:
+      - env-net
+    # NO ports: internal-only, reachable only by infisical on env-net
+
+  infisical-db-dump:
+    image: ${POSTGRES_IMAGE:-docker.io/postgres:15-alpine}
+    container_name: infisical-db-dump
+    profiles:
+      - env
+    restart: unless-stopped
+    # Same reasoning as infisical; the dump script probes with pg_isready and
+    # skips the run when the database is not reachable yet.
+    depends_on:
+      - infisical-postgres
+    command: ["/bin/sh", "/usr/local/bin/pg-dump.sh"]
+    environment:
+      - TZ=${TZ:-UTC}
+      - PGHOST=infisical-postgres
+      - PGPORT=5432
+      - PGUSER=infisical
+      - PGPASSWORD=${INFISICAL_DB_PASSWORD}
+      - PGDATABASE=infisical
+      # Single-database mode. The shared pg-dump.sh keeps the mattermost-dump
+      # filename convention, so dumps land as infisical-<ts>.dump plus
+      # infisical-latest.dump.
+      - DB_DUMP_ALL=false
+      - DB_DUMP_PREFIX=infisical
+      - DB_DUMP_HOUR=${INFISICAL_DB_DUMP_HOUR:-2}
+      - DB_DUMP_MINUTE=${INFISICAL_DB_DUMP_MINUTE:-15}
+      - DB_DUMP_KEEP_DAYS=${INFISICAL_DB_DUMP_KEEP_DAYS:-14}
+    volumes:
+      - ./backup/pg-dump.sh:/usr/local/bin/pg-dump.sh:ro
+      - ./data/infisical/db-dumps:/dumps
+    networks:
+      - env-net
+
   # --- Private tier (Tailscale only) -----------------------------------------
   # Application database for first-party backends. SECURITY.md Tier B: reachable
   # over Tailscale and from appdb-net, never from the LAN and never through
@@ -300,6 +405,7 @@ services:
       - ./data/n8n:/sources/n8n:ro
       - ./data/adguard:/sources/adguard:ro
       - ./data/mattermost:/sources/mattermost:ro
+      - ./data/infisical:/sources/infisical:ro
       - ./data/appdb:/sources/appdb:ro
       # Mount future service data volumes read-only under /sources/<service>
       # e.g. - ./data/<service>:/sources/<service>:ro
@@ -320,5 +426,11 @@ networks:
   # with netavark). Future first-party backends join this network and reach the
   # database at appdb:5432 rather than through the published port.
   appdb-net:
+    driver: bridge
+    internal: true
+  env-net:
+    # Same private-tier rule as appdb-net: no egress, host still reaches the
+    # published tailscale0 port. The env store's own PostgreSQL never leaves
+    # this network.
     driver: bridge
     internal: true

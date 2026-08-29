@@ -57,8 +57,8 @@ else
 fi
 
 # --- 2. Tier B services must not be reachable by cloudflared ------------------
-# cloudflared only reaches edge-net. Keeping the db services off it means a
-# public hostname created by mistake still cannot route to the database.
+# cloudflared only reaches edge-net. Keeping the db and env services off it
+# means a public hostname created by mistake still cannot route to them.
 edge_members() {
   awk '
     /^  [a-z][a-z0-9_-]*:[[:space:]]*$/ { svc = $1; sub(/:$/, "", svc); innet = 0 }
@@ -68,7 +68,7 @@ edge_members() {
   ' docker-compose.yml
 }
 
-for svc in appdb appdb-adminer appdb-dump; do
+for svc in appdb appdb-adminer appdb-dump infisical infisical-postgres infisical-redis infisical-db-dump; do
   if edge_members | grep -qx "$svc"; then
     fail "$svc is on edge-net; cloudflared could reach it"
   else
@@ -76,8 +76,8 @@ for svc in appdb appdb-adminer appdb-dump; do
   fi
 done
 
-# --- 3. db profile services exist --------------------------------------------
-for svc in appdb appdb-adminer appdb-dump; do
+# --- 3. db and env profile services exist ------------------------------------
+for svc in appdb appdb-adminer appdb-dump infisical infisical-postgres infisical-redis infisical-db-dump; do
   if grep -qE "^  ${svc}:[[:space:]]*$" docker-compose.yml; then
     pass "$svc is defined"
   else
@@ -112,6 +112,18 @@ if printf '%s' "$rendered" | grep -qE '(^|[^0-9.])0\.0\.0\.0:'; then
   fail "rendered config contains a 0.0.0.0 bind"
 else
   pass "rendered config has no 0.0.0.0 bind"
+fi
+
+# --- 6. env profile: an empty TAILSCALE_IP degrades to loopback, never wild ---
+# Unlike the db profile (which fails the render on purpose), Infisical keeps
+# working on loopback so the store cannot silently land on every interface.
+rendered_env="$($COMPOSE --env-file "$scratch/.env.empty" -f docker-compose.yml \
+  --profile env config 2>/dev/null)"
+
+if printf '%s' "$rendered_env" | grep -qE '(^|[^0-9.])0\.0\.0\.0:'; then
+  fail "env profile rendered with an empty TAILSCALE_IP contains a 0.0.0.0 bind"
+else
+  pass "env profile falls back to loopback with an empty TAILSCALE_IP"
 fi
 
 echo

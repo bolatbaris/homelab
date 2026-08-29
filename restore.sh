@@ -4,8 +4,9 @@
 #
 # Restore REQUIRES the same .env secrets as when the backup was taken --
 # especially RESTIC_PASSWORD (to open the repo) and N8N_ENCRYPTION_KEY /
-# MATTERMOST_DB_PASSWORD (to decrypt restored credentials). Without them the
-# data is unrecoverable even though it is "backed up".
+# MATTERMOST_DB_PASSWORD / INFISICAL_ENCRYPTION_KEY (to decrypt restored
+# credentials). Without them the data is unrecoverable even though it is
+# "backed up".
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
@@ -36,9 +37,9 @@ normalize_profiles() {
 
   for profile in $(printf '%s' "$raw" | tr ',' ' '); do
     case "$profile" in
-      dns|mgmt|chat|db) ;;
+      dns|mgmt|chat|env|db) ;;
       *)
-        echo "ERROR: invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, db." >&2
+        echo "ERROR: invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env, db." >&2
         exit 1
         ;;
     esac
