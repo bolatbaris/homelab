@@ -10,7 +10,7 @@ Every service belongs to exactly one exposure tier. The tier decides how it is p
 |---|---|---|---|---|---|
 | A | Public | Cloudflare Tunnel | `edge-net` only | per-hostname Cloudflare Access policy | gitea (HTTP), n8n, glances, mattermost* |
 | B | Private | Tailscale (tailnet) | tailscale0 address only | tailnet membership + ACL + service auth | infisical (env store)*, appdb (PostgreSQL)*, appdb-adminer*, umami (analytics)*, glitchtip (error monitoring)* |
-| C | Internal | SSH / `podman exec` | loopback or no published port | host shell access | mattermost-postgres, backup, portainer* |
+| C | Internal | SSH / `podman exec` | loopback or no published port | host shell access | mattermost-postgres, glitchtip-postgres, backup, portainer* |
 
 \* profile-gated optional services.
 

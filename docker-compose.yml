@@ -561,7 +561,7 @@ services:
       # Absolute URLs (DSN links, invite emails) build from this. The default is
       # a placeholder; set it to http://<tailscale-ip>:8082 in .env, or the
       # https://...ts.net address when fronted by `tailscale serve`.
-      - GLITCHTIP_DOMAIN=${GLITCHTIP_DOMAIN:-http://localhost:8080}
+      - GLITCHTIP_DOMAIN=${GLITCHTIP_DOMAIN:-http://localhost:8082}
       # Email defaults to the container log; set an smtp:// URL to send alert
       # mail (see deployment.md section 17).
       - EMAIL_URL=${GLITCHTIP_EMAIL_URL:-consolemail://}
