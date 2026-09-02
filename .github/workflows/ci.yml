@@ -36,8 +36,8 @@ jobs:
           # still fails.
           sed -E 's/^(TAILSCALE_IP)=.*/\1=100.64.0.1/' .env.example > .env
           docker compose -f docker-compose.yml config >/dev/null
-          docker compose -f docker-compose.yml --profile dns --profile mgmt --profile chat --profile env --profile db config >/dev/null
-          docker compose -f docker-compose.yml -f compose.dev.yml --profile dns --profile mgmt --profile chat --profile env --profile db config >/dev/null
+          docker compose -f docker-compose.yml --profile dns --profile mgmt --profile chat --profile env --profile db --profile analytics --profile monitoring config >/dev/null
+          docker compose -f docker-compose.yml -f compose.dev.yml --profile dns --profile mgmt --profile chat --profile env --profile db --profile analytics --profile monitoring config >/dev/null
 
       - name: No auto-loaded override
         run: test ! -f docker-compose.override.yml

@@ -60,7 +60,7 @@ next recreate while the disk stays empty. `backup.sh` refuses anything outside
 `/backup`.
 - `N8N_ENCRYPTION_KEY=<openssl rand -hex 32>`
 
-Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`, `env`, `db`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`. The `db` profile (section 14) and the `env` profile (section 15) need `TAILSCALE_ENABLED=true` plus their own keys (`APPDB_*` / `INFISICAL_*`); the installer refuses either profile otherwise.
+Enable optional services with `LOCALCLOUD_PROFILES` (comma-separated): `dns`, `mgmt`, `chat`, `env`, `db`. Invalid profile names fail the installer. Set `PODMAN_SOCKET_PATH` only for `mgmt`, and `MATTERMOST_DB_PASSWORD` plus `MATTERMOST_SUBDOMAIN` only for `chat`. The `db` profile (section 14) and the `env` profile (section 15) need `TAILSCALE_ENABLED=true` plus their own keys (`APPDB_*` / `INFISICAL_*`); the installer refuses either profile otherwise. The `analytics` profile (section 16) and the `monitoring` profile (section 17) follow the same Tier B rule (`UMAMI_*` / `GLITCHTIP_*`).
 
 ## 3. Static LAN IP
 
@@ -180,7 +180,7 @@ Expected base services:
 - n8n
 - backup
 
-Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`), `infisical` + `infisical-postgres` + `infisical-redis` + `infisical-db-dump` (`env`), `appdb` + `appdb-adminer` + `appdb-dump` (`db`). When the `dns` profile is enabled, also verify AdGuard:
+Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`), `infisical` + `infisical-postgres` + `infisical-redis` + `infisical-db-dump` (`env`), `appdb` + `appdb-adminer` + `appdb-dump` (`db`), `umami` + `umami-postgres` + `umami-db-dump` (`analytics`), `glitchtip` + `glitchtip-postgres` + `glitchtip-valkey` + `glitchtip-db-dump` (`monitoring`). When the `dns` profile is enabled, also verify AdGuard:
 
 ```sh
 dig @"$LAN_IP" example.com
@@ -235,6 +235,12 @@ Umami (requires Tailscale - section 13 first):
 
 ```sh
 podman-compose -f docker-compose.yml --profile analytics up -d umami-postgres umami-db-dump umami
+```
+
+GlitchTip (requires Tailscale - section 13 first):
+
+```sh
+podman-compose -f docker-compose.yml --profile monitoring up -d glitchtip-postgres glitchtip-valkey glitchtip-db-dump glitchtip
 ```
 
 ## 10. Restore
@@ -882,7 +888,7 @@ Optional profile `analytics`. [Umami](https://umami.is) is the stack's privacy-f
    Keep `UMAMI_APP_SECRET` and `UMAMI_2FA_KEY` off the backup disk, with `RESTIC_PASSWORD`: losing `UMAMI_APP_SECRET` invalidates every session, losing `UMAMI_2FA_KEY` locks out every account with 2FA enabled.
 3. Enable: add `analytics` to `LOCALCLOUD_PROFILES` and rerun `./install.sh`.
 
-The profile brings `umami` (bound to `${TAILSCALE_IP}:${UMAMI_PORT:-3002}`; 3002 rather than Umami's native 3000 so the loopback dev fallback cannot collide with Gitea's dev port), `umami-postgres` (no ports; per-feature instance on `POSTGRES_IMAGE`, never shared with another profile), and `umami-db-dump` (logical `pg_dump` via the shared `backup/pg-dump.sh`, at 02:00 by default - first in the nightly sequence, ahead of the 02:15 Infisical, 02:30 appdb, and 02:45 Mattermost dumps and the 03:00 restic snapshot).
+The profile brings `umami` (bound to `${TAILSCALE_IP}:${UMAMI_PORT:-3002}`; 3002 rather than Umami's native 3000 so the loopback dev fallback cannot collide with Gitea's dev port), `umami-postgres` (no ports; per-feature instance on `POSTGRES_IMAGE`, never shared with another profile), and `umami-db-dump` (logical `pg_dump` via the shared `backup/pg-dump.sh`, at 02:00 by default - second in the nightly sequence, after the 01:45 GlitchTip dump and ahead of the 02:15 Infisical, 02:30 appdb, and 02:45 Mattermost dumps and the 03:00 restic snapshot).
 
 Umami applies its database schema and migrations automatically on startup, so the first start against an empty `umami-postgres` needs no manual step.
 
@@ -936,3 +942,72 @@ podman exec -i umami-postgres pg_restore -U umami -d umami < ./data/umami/db-dum
 ```
 
 Rollback: remove `analytics` from `LOCALCLOUD_PROFILES`, rerun `./install.sh`. The containers stop and `./data/umami` stays in place.
+
+## 17. App-Error Monitoring (GlitchTip)
+
+Optional profile `monitoring`. [GlitchTip](https://glitchtip.com) is the stack's Sentry-compatible error monitoring: your applications report exceptions through a Sentry DSN (or OTLP) and you triage them from a web UI. It is Tier B (Private): reachable **only through Tailscale**, bound to the tailscale0 address, and deliberately never attached to the tunnel network (`glitchtip-net` only - see [SECURITY.md](SECURITY.md)).
+
+### Prerequisites
+
+1. Section 13 complete: Tailscale installed on the host and `TAILSCALE_ENABLED=true` in `.env`. The installer fails closed when `monitoring` is enabled without the Private transport.
+2. Keys in `.env`:
+
+   ```
+   GLITCHTIP_SECRET_KEY=<openssl rand -hex 32>    # Django SECRET_KEY; signs sessions
+   GLITCHTIP_DB_PASSWORD=<openssl rand -hex 32>   # hex: it is embedded in the postgres:// URI
+   ```
+
+3. Enable: add `monitoring` to `LOCALCLOUD_PROFILES` and rerun `./install.sh`.
+
+The profile brings `glitchtip` (upstream's single-container `SERVER_ROLE=all_in_one` - web server with the background worker embedded, which fits the stack's low-idle-resource stance; bound to `${TAILSCALE_IP}:${GLITCHTIP_PORT:-8082}`, container-internal port 8000), `glitchtip-postgres` (no ports; per-feature instance on `POSTGRES_IMAGE`, never shared with another profile), `glitchtip-valkey` (no ports; upstream's recommended queue/cache store, append-only persistence), and `glitchtip-db-dump` (logical `pg_dump` via the shared `backup/pg-dump.sh`, at 01:45 by default - first in the nightly sequence, ahead of the 02:00 Umami, 02:15 Infisical, 02:30 appdb, and 02:45 Mattermost dumps and the 03:00 restic snapshot).
+
+GlitchTip applies its database migrations automatically on startup, so the first start against an empty `glitchtip-postgres` needs no manual step. Startup is gated on PostgreSQL and Valkey accepting TCP (the image's start script would otherwise hard-exit during migrations - see the troubleshooting note in section 16 for why that matters on rootless Podman).
+
+### What Tier B Means For Monitoring
+
+Event ingest (`<DSN endpoint>` and the OTLP path) answers the SDKs embedded in your applications. On this stack those endpoints are reachable **only from tailnet devices and first-party containers**, which fits monitoring your own internal tools and backends (apps on the tailnet, containers joined to `glitchtip-net` via the compose network). Applications or client-side SDKs outside the tailnet cannot report events - by design. Monitoring public-facing apps' client-side errors would require a deliberate Tier A exposure decision instead (see [SECURITY.md](SECURITY.md)); do not widen this profile's reach without one.
+
+Point your apps' Sentry SDK at the tailnet address, for example `sentry-sdk.init(dsn="http://<public-key>@<tailscale-ip>:8082/<project-id>")`.
+
+### First-Run Setup
+
+1. From an enrolled device, open `http://<tailscale-ip>:8082` and register the first user. `ENABLE_USER_REGISTRATION` defaults to `false`: the signup page stays open only while the user table is empty, then closes. Add later users through a superuser or organization invites.
+   - Locked out anyway (or skipped signup)? Create an admin by hand:
+     ```sh
+     podman exec -it glitchtip ./manage.py createsuperuser
+     ```
+2. Create an organization and a project per application; copy the project's DSN into that app's Sentry SDK.
+3. Tailnet ACLs decide who can even reach the UI - grant port `8082` only to the devices that need it (see the ACL example in section 13).
+4. Optional - uptime monitors: GlitchTip can also ping your services. Targets on private/internal IPs are blocked by default (`GLITCHTIP_UPTIME_ALLOW_PRIVATE_IPS=false`, an SSRF guard); if you want uptime checks against internal services, set that variable for the `glitchtip` service deliberately.
+5. Optional - alert email: mail defaults to the container log (`consolemail://`). Set `GLITCHTIP_EMAIL_URL` to an `smtp://` URL and `GLITCHTIP_DEFAULT_FROM_EMAIL` in `.env`, then rerun `./install.sh`.
+
+### Optional HTTPS
+
+Tailscale already encrypts the transport (WireGuard), so plain HTTP on the tailnet is the baseline. For a valid certificate and clean URLs, front the service with `tailscale serve` (see `tailscale serve --help`), then set `GLITCHTIP_DOMAIN=https://glitchtip.<your-tailnet>.ts.net` and `GLITCHTIP_CSRF_TRUSTED_ORIGINS=https://glitchtip.<your-tailnet>.ts.net` in `.env` and rerun `./install.sh`.
+
+### Verify
+
+```sh
+podman ps --format "table {{.Names}}\t{{.Status}}" | grep glitchtip
+ss -tlnp | grep "${GLITCHTIP_PORT:-8082}"   # foreign address: the 100.x tailscale IP, never 0.0.0.0
+podman logs glitchtip 2>&1 | tail -20
+podman exec glitchtip-db-dump /usr/local/bin/pg-dump.sh once
+ls -lh ./data/glitchtip/db-dumps/           # glitchtip-latest.dump after the first dump run
+curl -m 3 http://<tailscale-ip>:8082/       # from an enrolled device: the login page
+```
+
+Negative test from a **non-tailnet** device: `curl -m 3 http://<lan-ip>:8082` must time out or refuse.
+
+### Restore Notes
+
+The generic `./restore.sh` flow covers `./data/glitchtip` automatically. The restored PostgreSQL directory is supplemented by `glitchtip-latest.dump` (restore with `pg_restore` against a clean `glitchtip-postgres` container if the raw data restore ever fails):
+
+```sh
+podman-compose -f docker-compose.yml --profile monitoring up -d glitchtip-postgres
+# wait for it to accept connections, then:
+podman exec -i glitchtip-postgres dropdb -U glitchtip glitchtip
+podman exec -i glitchtip-postgres createdb -U glitchtip glitchtip
+podman exec -i glitchtip-postgres pg_restore -U glitchtip -d glitchtip < ./data/glitchtip/db-dumps/glitchtip-latest.dump
+```
+
+Rollback: remove `monitoring` from `LOCALCLOUD_PROFILES`, rerun `./install.sh`. The containers stop and `./data/glitchtip` stays in place.

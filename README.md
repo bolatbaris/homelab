@@ -25,6 +25,7 @@ This is not a hosted SaaS product. It is installable self-hosted software: users
 | restic backup sidecar | encrypted, versioned backups | no network |
 | PostgreSQL + Adminer (`db` profile) | application database for your own backends | Tailscale only, never Cloudflare |
 | Umami (`analytics` profile) | privacy-first web analytics | Tailscale only, never Cloudflare |
+| GlitchTip (`monitoring` profile) | Sentry-compatible error monitoring for your apps | Tailscale only, never Cloudflare |
 
 Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-separated, e.g. `LOCALCLOUD_PROFILES=dns,chat`):
 
@@ -36,6 +37,7 @@ Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-sepa
 | `env` | Infisical - encrypted env/secret store for projects (dev/test/qa/prod). Tier B only: reachable through Tailscale, never through the tunnel; requires `TAILSCALE_ENABLED=true`. | off |
 | `db` | PostgreSQL + Adminer + logical dumps - the Private (Tier B) application database. Requires `TAILSCALE_ENABLED=true`; the installer refuses the profile without it. | off |
 | `analytics` | Umami - privacy-first web analytics + PostgreSQL + logical dumps. Tier B only: reachable through Tailscale, never through the tunnel; requires `TAILSCALE_ENABLED=true`. | off |
+| `monitoring` | GlitchTip - Sentry-compatible app-error monitoring + PostgreSQL + Valkey + logical dumps. Tier B only: reachable through Tailscale, never through the tunnel; requires `TAILSCALE_ENABLED=true`. | off |
 
 ## Requirements
 
@@ -44,7 +46,7 @@ Optional profiles (enable by setting `LOCALCLOUD_PROFILES` in `.env`, comma-sepa
 - Cloudflare account and Tunnel token
 - Static LAN IP for the server
 - USB or external disk for backups
-- Optional: Tailscale on the host for the Private (Tier B) transport - **required** if you enable the `db`, `env`, or `analytics` profile
+- Optional: Tailscale on the host for the Private (Tier B) transport - **required** if you enable the `db`, `env`, `analytics`, or `monitoring` profile
 
 ## Install
 
@@ -71,13 +73,15 @@ Minimum required `.env` values:
 
 Enable the Private (Tier B) transport with `TAILSCALE_ENABLED=true` after installing Tailscale on the host (see [deployment.md section 13](deployment.md)); `install.sh` detects the tailscale0 address and writes it to `TAILSCALE_IP`.
 
-Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). Valid values are `dns`, `mgmt`, `chat`, `env`, `db`, and `analytics`; invalid values fail the installer. `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` and `MATTERMOST_SUBDOMAIN` are required only for the `chat` profile.
+Enable optional services with `LOCALCLOUD_PROFILES` (e.g. `LOCALCLOUD_PROFILES=dns,chat`). Valid values are `dns`, `mgmt`, `chat`, `env`, `db`, `analytics`, and `monitoring`; invalid values fail the installer. `PODMAN_SOCKET_PATH` is required only for the `mgmt` profile (Portainer); `MATTERMOST_DB_PASSWORD` and `MATTERMOST_SUBDOMAIN` are required only for the `chat` profile.
 
 The `db` profile additionally requires `TAILSCALE_ENABLED=true` plus `APPDB_SUPERUSER_PASSWORD`, `APPDB_APP_USER`, `APPDB_APP_PASSWORD`, and `APPDB_DATABASES`. It publishes PostgreSQL and Adminer on the tailscale0 address only, and neither is ever routed through Cloudflare Tunnel. See [deployment.md section 14](deployment.md).
 
 The `env` profile additionally requires `TAILSCALE_ENABLED=true` plus `INFISICAL_ENCRYPTION_KEY`, `INFISICAL_AUTH_SECRET`, and `INFISICAL_DB_PASSWORD`. It publishes Infisical on the tailscale0 address only, and it is never routed through Cloudflare Tunnel. See [deployment.md section 15](deployment.md).
 
 The `analytics` profile additionally requires `TAILSCALE_ENABLED=true` plus `UMAMI_DB_PASSWORD`, `UMAMI_APP_SECRET`, and `UMAMI_2FA_KEY`. It publishes Umami on the tailscale0 address only, and it is never routed through Cloudflare Tunnel. Note that this also applies to Umami's collect endpoint: only tailnet devices can be measured. See [deployment.md section 16](deployment.md).
+
+The `monitoring` profile additionally requires `TAILSCALE_ENABLED=true` plus `GLITCHTIP_SECRET_KEY` and `GLITCHTIP_DB_PASSWORD`. It publishes GlitchTip on the tailscale0 address only, and it is never routed through Cloudflare Tunnel. Note that this also applies to GlitchTip's event-ingest endpoints (DSN / OTLP): only tailnet devices and first-party containers can report events. See [deployment.md section 17](deployment.md).
 
 Generate secrets:
 
@@ -112,6 +116,12 @@ Optional Umami (dev note: `UMAMI_PORT` defaults to 3002 because Gitea's dev port
 podman-compose -f docker-compose.yml -f compose.dev.yml --profile analytics up -d
 ```
 
+Optional GlitchTip (dev note: `GLITCHTIP_PORT` defaults to 8082, after Infisical's 8080 and Adminer's 8081):
+
+```sh
+podman-compose -f docker-compose.yml -f compose.dev.yml --profile monitoring up -d
+```
+
 ## Security Model
 
 Services follow a three-tier exposure model:
@@ -136,7 +146,7 @@ The backup container runs nightly at `03:00` in the configured `TZ`, initializes
 
 When `BACKUP_REQUIRE_MOUNT=true`, `./install.sh` fails unless `${BACKUP_DEST_PATH}` is already mounted. The installer writes a marker file on the mounted backup disk, and scheduled backups abort if that marker is missing.
 
-When the `chat` profile is enabled, `mattermost-postgres-dump` writes a logical PostgreSQL dump to `./data/mattermost/db-dumps` at `02:45` by default, before the restic snapshot. That dump contains Mattermost message history in a restore-friendly format; restic also backs up the raw PostgreSQL data directory. The `analytics` profile follows the same pattern: `umami-db-dump` writes its logical dump at `02:00`, first in the nightly sequence.
+When the `chat` profile is enabled, `mattermost-postgres-dump` writes a logical PostgreSQL dump to `./data/mattermost/db-dumps` at `02:45` by default, before the restic snapshot. That dump contains Mattermost message history in a restore-friendly format; restic also backs up the raw PostgreSQL data directory. The `analytics` profile follows the same pattern: `umami-db-dump` writes its logical dump at `02:00`, and the `monitoring` profile's `glitchtip-db-dump` starts the nightly sequence at `01:45`.
 
 Keep `RESTIC_PASSWORD`, `N8N_ENCRYPTION_KEY`, and `INFISICAL_ENCRYPTION_KEY` **off** the backup disk (for example in a password manager). Without them a restored backup cannot be decrypted.
 

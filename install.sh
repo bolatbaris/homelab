@@ -51,9 +51,9 @@ normalize_profiles() {
 
   for profile in $(printf '%s' "$raw" | tr ',' ' '); do
     case "$profile" in
-      dns|mgmt|chat|env|db|analytics) ;;
+      dns|mgmt|chat|env|db|analytics|monitoring) ;;
       *)
-        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env, db, analytics."
+        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env, db, analytics, monitoring."
         ;;
     esac
 
@@ -171,6 +171,7 @@ Optional services via LOCALCLOUD_PROFILES (comma-separated):
   env  -> Infisical env store, Tier B only (requires TAILSCALE_ENABLED=true plus INFISICAL_ENCRYPTION_KEY, INFISICAL_AUTH_SECRET, INFISICAL_DB_PASSWORD)
   db   -> Application database (PostgreSQL + Adminer), Tier B only (requires TAILSCALE_ENABLED=true plus the APPDB_* values in .env.example)
   analytics -> Umami web analytics, Tier B only (requires TAILSCALE_ENABLED=true plus UMAMI_DB_PASSWORD, UMAMI_APP_SECRET, UMAMI_2FA_KEY)
+  monitoring -> GlitchTip app-error monitoring, Tier B only (requires TAILSCALE_ENABLED=true plus GLITCHTIP_SECRET_KEY, GLITCHTIP_DB_PASSWORD)
 MSG
   exit 0
 fi
@@ -252,6 +253,18 @@ if profile_enabled analytics; then
   require_env_value UMAMI_APP_SECRET
   require_env_value UMAMI_2FA_KEY
 fi
+if profile_enabled monitoring; then
+  # GlitchTip is Tier B (Private), same rule as env, db, and analytics: without
+  # Tailscale there is no address worth binding, so fail before anything
+  # starts rather than fall back to some weaker reach. This also covers the
+  # event-ingest endpoints - the apps being monitored must be able to reach
+  # the tailnet anyway.
+  if [ "$TAILSCALE_ENABLED" != "true" ]; then
+    fail "Profile 'monitoring' (GlitchTip error monitoring) is Tier B (Private) and requires TAILSCALE_ENABLED=true. Complete deployment.md section 13 first, or disable the monitoring profile."
+  fi
+  require_env_value GLITCHTIP_SECRET_KEY
+  require_env_value GLITCHTIP_DB_PASSWORD
+fi
 
 check_tailscale
 
@@ -272,7 +285,8 @@ mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
          ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps} \
          ./data/infisical/{postgres,redis,db-dumps} \
          ./data/appdb/{postgres,db-dumps} \
-         ./data/umami/{postgres,db-dumps}
+         ./data/umami/{postgres,db-dumps} \
+         ./data/glitchtip/{postgres,valkey,uploads,db-dumps}
 # Privacy boundary: ./data itself is host-user owned and 0700, so no other
 # host user can traverse it. Individual top-level dirs may be owned by
 # rootless Podman subuids on migrated installs - uid isolation already covers
@@ -292,6 +306,10 @@ podman unshare chown -R 1000:1000 ./data/gitea
 podman unshare chown -R 2000:2000 \
   ./data/mattermost/config ./data/mattermost/data ./data/mattermost/logs \
   ./data/mattermost/plugins ./data/mattermost/client-plugins ./data/mattermost/bleve-indexes
+# GlitchTip runs as the image's uid-5000 `app` user and needs to write
+# uploads (sourcemaps, debug symbols). Its PostgreSQL and Valkey images chown
+# their own data directories, so only uploads maps through the user namespace.
+podman unshare chown -R 5000:5000 ./data/glitchtip/uploads
 
 # AdGuard DNS is opt-in. Only reconfigure the host resolver when the dns profile
 # is enabled -- these changes are destructive on hosts that manage
@@ -388,7 +406,7 @@ systemctl --user enable "$SERVICE_NAME"
 # staying up. The db profile is only named once an address is known, because
 # rendering it without one trips its own bind guard -- correct behavior, but a
 # confusing way for a teardown to fail.
-CLEANUP_PROFILE_ARGS=(--profile dns --profile mgmt --profile chat --profile env --profile analytics)
+CLEANUP_PROFILE_ARGS=(--profile dns --profile mgmt --profile chat --profile env --profile analytics --profile monitoring)
 if [ -n "$TAILSCALE_IP" ]; then
   CLEANUP_PROFILE_ARGS+=(--profile db)
 fi

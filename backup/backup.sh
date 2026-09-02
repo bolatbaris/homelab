@@ -83,6 +83,7 @@ restic backup "$SRC_ROOT" \
   --exclude "/sources/mattermost/db-dumps/*.tmp" \
   --exclude "/sources/appdb/db-dumps/*.tmp" \
   --exclude "/sources/umami/db-dumps/*.tmp" \
+  --exclude "/sources/glitchtip/db-dumps/*.tmp" \
   --host "$RESTIC_HOST" \
   --tag localcloud
 restic forget --host "$RESTIC_HOST" --tag localcloud \

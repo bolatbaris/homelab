@@ -496,9 +496,9 @@ services:
       - PGPASSWORD=${UMAMI_DB_PASSWORD}
       - PGDATABASE=umami
       # Single-database mode, shared pg-dump.sh: dumps land as
-      # umami-<ts>.dump plus umami-latest.dump. Runs at 02:00 - first in the
-      # nightly sequence (infisical 02:15, appdb 02:30, mattermost 02:45,
-      # restic 03:00).
+      # umami-<ts>.dump plus umami-latest.dump. Runs at 02:00 - second in the
+      # nightly sequence (glitchtip 01:45, infisical 02:15, appdb 02:30,
+      # mattermost 02:45, restic 03:00).
       - DB_DUMP_ALL=false
       - DB_DUMP_PREFIX=umami
       - DB_DUMP_HOUR=${UMAMI_DB_DUMP_HOUR:-2}
@@ -509,6 +509,168 @@ services:
       - ./data/umami/db-dumps:/dumps
     networks:
       - umami-net
+
+  # --- Private tier (Tailscale only) -----------------------------------------
+  # GlitchTip application-error monitoring (Sentry-compatible). Same Tier B rule
+  # as the env, db, and analytics profiles: reachable over Tailscale and
+  # glitchtip-net only, never from the LAN and never through Cloudflare. That
+  # also applies to the ingest endpoints (the DSN and OTLP paths): only tailnet
+  # devices and first-party containers can report events - the right fit for
+  # monitoring your own apps.
+  glitchtip:
+    image: ${GLITCHTIP_IMAGE:-docker.io/glitchtip/glitchtip:6}
+    container_name: glitchtip
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    # Plain ordering, not condition: service_healthy - see mattermost above.
+    depends_on:
+      - glitchtip-postgres
+      - glitchtip-valkey
+    # Gate startup on the database and queue store accepting TCP before handing
+    # off to the image's start script. The image's all_in_one role begins with
+    # `manage.py migrate`, which hard-exits when PostgreSQL is not ready (no
+    # internal retry), and a first-start crash-loop on rootless Podman can wedge
+    # conmon's restart supervision so the rootlessport publish proxy never
+    # spawns - the container later looks Ready while the host port silently does
+    # not listen (see deployment.md section 16). The image ships no nc/curl, so
+    # the probe is python3. exec keeps the real server a direct child.
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        until python3 -c "import socket; socket.create_connection(('glitchtip-postgres', 5432), 3)" 2>/dev/null; do
+        echo "waiting for glitchtip-postgres:5432"; sleep 2;
+        done;
+        until python3 -c "import socket; socket.create_connection(('glitchtip-valkey', 6379), 3)" 2>/dev/null; do
+        echo "waiting for glitchtip-valkey:6379"; sleep 2;
+        done;
+        exec ./bin/start.sh
+    init: true
+    environment:
+      - TZ=${TZ:-UTC}
+      # Upstream's single-container role: web server with the background worker
+      # embedded. The stack favors low idle resource use, and a homelab does not
+      # need the separate-worker scaling shape.
+      - SERVER_ROLE=all_in_one
+      - DATABASE_URL=postgresql://glitchtip:${GLITCHTIP_DB_PASSWORD}@glitchtip-postgres:5432/glitchtip
+      - VALKEY_URL=redis://glitchtip-valkey:6379/0
+      # Signs Django sessions and password-reset tokens. Same class of secret
+      # as N8N_ENCRYPTION_KEY: keep it off the backup disk.
+      - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
+      # Absolute URLs (DSN links, invite emails) build from this. The default is
+      # a placeholder; set it to http://<tailscale-ip>:8082 in .env, or the
+      # https://...ts.net address when fronted by `tailscale serve`.
+      - GLITCHTIP_DOMAIN=${GLITCHTIP_DOMAIN:-http://localhost:8080}
+      # Email defaults to the container log; set an smtp:// URL to send alert
+      # mail (see deployment.md section 17).
+      - EMAIL_URL=${GLITCHTIP_EMAIL_URL:-consolemail://}
+      - DEFAULT_FROM_EMAIL=${GLITCHTIP_DEFAULT_FROM_EMAIL:-glitchtip@localhost}
+      # Fail-closed signup: with false, the FIRST user can still register (the
+      # signup page stays open while the user table is empty) and registration
+      # closes afterwards. New users then come from a superuser or invites.
+      - ENABLE_USER_REGISTRATION=${GLITCHTIP_ENABLE_USER_REGISTRATION:-false}
+      # Needed only when serving from a different origin (e.g. tailscale serve
+      # https); empty keeps Django's default behavior for direct tailnet access.
+      - CSRF_TRUSTED_ORIGINS=${GLITCHTIP_CSRF_TRUSTED_ORIGINS:-}
+    ports:
+      # Tier B (Private): reachable only through Tailscale. Loopback fallback
+      # keeps an empty TAILSCALE_IP from degrading into a 0.0.0.0 bind;
+      # install.sh fails closed when the monitoring profile is enabled without
+      # TAILSCALE_ENABLED=true. 8082 continues the Tier B port row (8080
+      # Infisical, 8081 Adminer); the container-internal port stays 8000.
+      - "${TAILSCALE_IP:-127.0.0.1}:${GLITCHTIP_PORT:-8082}:8000"
+    # Kept for `podman ps` visibility and manual `podman healthcheck run` only;
+    # deliberately not used to gate startup ordering - see mattermost above.
+    # python3, because the image ships no curl.
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./data/glitchtip/uploads:/code/uploads
+    networks:
+      - glitchtip-net
+    # Deliberately NOT on edge-net: the tunnel must have no route to the
+    # monitoring UI or its event-ingest endpoints. See SECURITY.md Tier B.
+
+  glitchtip-postgres:
+    # Per-feature stateful instance (mattermost-postgres pattern): never shared
+    # with another service, pinned via POSTGRES_IMAGE like the other per-feature
+    # databases.
+    image: ${POSTGRES_IMAGE:-docker.io/postgres:15-alpine}
+    container_name: glitchtip-postgres
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=glitchtip
+      - POSTGRES_PASSWORD=${GLITCHTIP_DB_PASSWORD}
+      - POSTGRES_DB=glitchtip
+    volumes:
+      - ./data/glitchtip/postgres:/var/lib/postgresql/data
+    # Kept for `podman ps` visibility and manual `podman healthcheck run`,
+    # deliberately not used to gate startup ordering - see mattermost above.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glitchtip -d glitchtip"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - glitchtip-net
+    # NO ports: ever - the monitoring database is internal-only, never exposed
+
+  glitchtip-valkey:
+    # Queue/cache store for GlitchTip. Upstream recommends Valkey (the
+    # open-source Redis fork); it speaks the same protocol, and its official
+    # entrypoint chowns /data itself, so no rootless uid mapping is needed -
+    # the same properties that made infisical-redis a plain bind.
+    image: ${GLITCHTIP_VALKEY_IMAGE:-docker.io/valkey/valkey:9-alpine}
+    container_name: glitchtip-valkey
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    # appendonly keeps pending tasks across restarts; sessions survive too.
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/glitchtip/valkey:/data
+    networks:
+      - glitchtip-net
+    # NO ports: internal-only, reachable only by glitchtip on glitchtip-net
+
+  glitchtip-db-dump:
+    image: ${POSTGRES_IMAGE:-docker.io/postgres:15-alpine}
+    container_name: glitchtip-db-dump
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    # Same reasoning as glitchtip; the dump script probes with pg_isready and
+    # skips the run when the database is not reachable yet.
+    depends_on:
+      - glitchtip-postgres
+    command: ["/bin/sh", "/usr/local/bin/pg-dump.sh"]
+    environment:
+      - TZ=${TZ:-UTC}
+      - PGHOST=glitchtip-postgres
+      - PGPORT=5432
+      - PGUSER=glitchtip
+      - PGPASSWORD=${GLITCHTIP_DB_PASSWORD}
+      - PGDATABASE=glitchtip
+      # Single-database mode, shared pg-dump.sh: dumps land as
+      # glitchtip-<ts>.dump plus glitchtip-latest.dump. Runs at 01:45 - first
+      # in the nightly sequence (umami 02:00, infisical 02:15, appdb 02:30,
+      # mattermost 02:45, restic 03:00).
+      - DB_DUMP_ALL=false
+      - DB_DUMP_PREFIX=glitchtip
+      - DB_DUMP_HOUR=${GLITCHTIP_DB_DUMP_HOUR:-1}
+      - DB_DUMP_MINUTE=${GLITCHTIP_DB_DUMP_MINUTE:-45}
+      - DB_DUMP_KEEP_DAYS=${GLITCHTIP_DB_DUMP_KEEP_DAYS:-14}
+    volumes:
+      - ./backup/pg-dump.sh:/usr/local/bin/pg-dump.sh:ro
+      - ./data/glitchtip/db-dumps:/dumps
+    networks:
+      - glitchtip-net
 
   backup:
     build: ./backup
@@ -534,11 +696,18 @@ services:
       - ./data/infisical:/sources/infisical:ro
       - ./data/appdb:/sources/appdb:ro
       - ./data/umami:/sources/umami:ro
+      - ./data/glitchtip:/sources/glitchtip:ro
       # Mount future service data volumes read-only under /sources/<service>
       # e.g. - ./data/<service>:/sources/<service>:ro
     network_mode: none
 
 networks:
+  # Same private-tier rule as appdb-net, env-net, and umami-net: no egress, the
+  # host still reaches the published tailscale0 port. GlitchTip, its
+  # PostgreSQL, and its Valkey never leave this network.
+  glitchtip-net:
+    driver: bridge
+    internal: true
   edge-net:
     driver: bridge
   mgmt-net:

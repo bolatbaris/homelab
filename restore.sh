@@ -37,9 +37,9 @@ normalize_profiles() {
 
   for profile in $(printf '%s' "$raw" | tr ',' ' '); do
     case "$profile" in
-      dns|mgmt|chat|env|db|analytics) ;;
+      dns|mgmt|chat|env|db|analytics|monitoring) ;;
       *)
-        echo "ERROR: invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env, db, analytics." >&2
+        echo "ERROR: invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env, db, analytics, monitoring." >&2
         exit 1
         ;;
     esac

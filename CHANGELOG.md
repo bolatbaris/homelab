@@ -6,6 +6,28 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- App-error monitoring behind a new opt-in `monitoring` profile: GlitchTip
+  (Sentry-compatible, open source) in upstream's single-container
+  `SERVER_ROLE=all_in_one` shape, plus its per-feature `glitchtip-postgres`,
+  `glitchtip-valkey` (upstream's recommended queue/cache store, append-only
+  persistence), and a `glitchtip-db-dump` sidecar on the shared
+  `backup/pg-dump.sh` (logical `pg_dump` at 01:45, now first in the nightly
+  dump sequence, to `./data/glitchtip/db-dumps`). Tier B (Private) like the
+  `env`, `db`, and `analytics` profiles: `glitchtip` binds the tailscale0
+  address only (port 8082, continuing the Tier B port row), lives on a new
+  `internal: true` `glitchtip-net`, falls back to loopback rather than a
+  wildcard if `TAILSCALE_IP` is ever empty, and is never attached to
+  `edge-net` - which also covers the event-ingest endpoints (DSN / OTLP):
+  only tailnet devices and first-party containers can report events. The
+  installer fails closed unless `TAILSCALE_ENABLED=true` and
+  `GLITCHTIP_SECRET_KEY` and `GLITCHTIP_DB_PASSWORD` are set. Startup is
+  gated on PostgreSQL and Valkey accepting TCP via a python3 probe (the image
+  ships no nc/curl), because the image's start script hard-exits during
+  migrations when the database is not ready - the umami first-start lesson
+  applied up front. User signup defaults to fail-closed
+  (`ENABLE_USER_REGISTRATION=false`: open only while the user table is
+  empty). Documented that uptime monitors keep their private-IP SSRF guard
+  on by default, and the SMTP/tailscale-serve options.
 - Web analytics behind a new opt-in `analytics` profile: Umami (privacy-first,
   MIT-licensed) plus its per-feature `umami-postgres` and a `umami-db-dump`
   sidecar on the shared `backup/pg-dump.sh` (logical `pg_dump` at 02:00, first
