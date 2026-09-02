@@ -9,7 +9,7 @@ Every service belongs to exactly one exposure tier. The tier decides how it is p
 | Tier | Name | Transport | Binding | Identity | Examples |
 |---|---|---|---|---|---|
 | A | Public | Cloudflare Tunnel | `edge-net` only | per-hostname Cloudflare Access policy | gitea (HTTP), n8n, glances, mattermost* |
-| B | Private | Tailscale (tailnet) | tailscale0 address only | tailnet membership + ACL + service auth | infisical (env store)*, appdb (PostgreSQL)*, appdb-adminer* |
+| B | Private | Tailscale (tailnet) | tailscale0 address only | tailnet membership + ACL + service auth | infisical (env store)*, appdb (PostgreSQL)*, appdb-adminer*, umami (analytics)* |
 | C | Internal | SSH / `podman exec` | loopback or no published port | host shell access | mattermost-postgres, backup, portainer* |
 
 \* profile-gated optional services.
@@ -37,7 +37,7 @@ Tier B - Private:
 - Bind to the tailscale0 address, or publish no host port at all. Never bind to `0.0.0.0`, `::`, or a bare port.
 - ufw allows inbound on `tailscale0` only; the public interface stays default-deny.
 - Tailscale ACLs grant only the required ports from the required devices.
-- Implemented services in this tier: the `env` profile's Infisical (`infisical`), and the `db` profile's PostgreSQL (`appdb`) and Adminer (`appdb-adminer`). They bind the tailscale0 address - the `db` profile through compose's required-variable form, so an empty address fails the render instead of falling back to every interface; `install.sh` refuses both profiles unless `TAILSCALE_ENABLED=true`, probes that podman-compose actually implements that form, and CI asserts both behaviors. Infisical additionally falls back to loopback rather than a wildcard bind if `TAILSCALE_IP` is ever empty.
+- Implemented services in this tier: the `env` profile's Infisical (`infisical`), the `db` profile's PostgreSQL (`appdb`) and Adminer (`appdb-adminer`), and the `analytics` profile's Umami (`umami`). They bind the tailscale0 address - the `db` profile through compose's required-variable form, so an empty address fails the render instead of falling back to every interface; `install.sh` refuses all three profiles unless `TAILSCALE_ENABLED=true`, probes that podman-compose actually implements that form, and CI asserts the behaviors. Infisical and Umami additionally fall back to loopback rather than a wildcard bind if `TAILSCALE_IP` is ever empty.
 - These services are deliberately absent from `edge-net`. `cloudflared` reaches only that network, so a public hostname created by mistake still cannot route to them. The exposure boundary is the network topology, not a dashboard setting.
 - Adminer has no accounts of its own; the PostgreSQL credentials are the only authentication. Tailnet membership is therefore the outer perimeter, not a convenience.
 - Still planned for this tier: Gitea SSH (moved from its LAN bind).
@@ -50,7 +50,7 @@ Tier C - Internal:
 
 ### CI Enforcement
 
-`docker-compose.yml` and `compose.dev.yml` must never publish a port whose host part is anything other than `127.0.0.1`, `${LAN_IP…}`, or `${TAILSCALE_IP…}`. `tests/compose-guards.sh` enforces that, asserts that no Tier B service joins `edge-net`, and asserts both Tier B bind behaviors directly: rendering the `db` profile with an empty `TAILSCALE_IP` must fail, rendering it with one set must bind that address and no wildcard, and rendering the `env` profile with an empty `TAILSCALE_IP` must fall back to loopback rather than a wildcard. CI runs the script on every push, and you can run it yourself with `./tests/compose-guards.sh`.
+`docker-compose.yml` and `compose.dev.yml` must never publish a port whose host part is anything other than `127.0.0.1`, `${LAN_IP…}`, or `${TAILSCALE_IP…}`. `tests/compose-guards.sh` enforces that, asserts that no Tier B service joins `edge-net`, and asserts both Tier B bind behaviors directly: rendering the `db` profile with an empty `TAILSCALE_IP` must fail, rendering it with one set must bind that address and no wildcard, and rendering the `env` and `analytics` profiles with an empty `TAILSCALE_IP` must fall back to loopback rather than a wildcard. CI runs the script on every push, and you can run it yourself with `./tests/compose-guards.sh`.
 
 Tier B services bind to the tailscale0 address, Tier A services are reached through the tunnel without published ports, and Tier C services publish nothing.
 
@@ -100,6 +100,7 @@ openssl rand -hex 32      # APPDB_SUPERUSER_PASSWORD and APPDB_APP_PASSWORD if e
 openssl rand -hex 16      # INFISICAL_ENCRYPTION_KEY (16-byte hex) if enabling --profile env
 openssl rand -base64 32   # INFISICAL_AUTH_SECRET if enabling --profile env
 openssl rand -hex 32      # INFISICAL_DB_PASSWORD if enabling --profile env
+openssl rand -hex 32      # UMAMI_DB_PASSWORD, UMAMI_APP_SECRET, and UMAMI_2FA_KEY if enabling --profile analytics
 ```
 
 Prefer hex for values embedded in connection strings. Store `N8N_ENCRYPTION_KEY`, `RESTIC_PASSWORD`, and `INFISICAL_ENCRYPTION_KEY` outside the backup disk. Losing any of them can make data unrecoverable.
@@ -130,6 +131,7 @@ Production baseline:
 - Cold/manual backups before major upgrades, especially when the `chat` profile is enabled and PostgreSQL is active.
 - Host disk encryption recommended when using `chat`, because `./data/mattermost` contains the live PostgreSQL database and logical dumps of message history before restic encrypts the backup copy.
 - The same applies to `db`: `./data/appdb` holds the live application database plus logical dumps, including `globals-latest.sql`, which carries every role's password hash.
+- The same applies to `analytics`: `./data/umami` holds the live Umami database plus logical dumps, which carry the analytics user-table password hashes.
 
 ## Updates
 

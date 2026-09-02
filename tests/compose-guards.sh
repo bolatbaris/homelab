@@ -68,7 +68,7 @@ edge_members() {
   ' docker-compose.yml
 }
 
-for svc in appdb appdb-adminer appdb-dump infisical infisical-postgres infisical-redis infisical-db-dump; do
+for svc in appdb appdb-adminer appdb-dump infisical infisical-postgres infisical-redis infisical-db-dump umami umami-postgres umami-db-dump; do
   if edge_members | grep -qx "$svc"; then
     fail "$svc is on edge-net; cloudflared could reach it"
   else
@@ -77,7 +77,7 @@ for svc in appdb appdb-adminer appdb-dump infisical infisical-postgres infisical
 done
 
 # --- 3. db and env profile services exist ------------------------------------
-for svc in appdb appdb-adminer appdb-dump infisical infisical-postgres infisical-redis infisical-db-dump; do
+for svc in appdb appdb-adminer appdb-dump infisical infisical-postgres infisical-redis infisical-db-dump umami umami-postgres umami-db-dump; do
   if grep -qE "^  ${svc}:[[:space:]]*$" docker-compose.yml; then
     pass "$svc is defined"
   else
@@ -124,6 +124,16 @@ if printf '%s' "$rendered_env" | grep -qE '(^|[^0-9.])0\.0\.0\.0:'; then
   fail "env profile rendered with an empty TAILSCALE_IP contains a 0.0.0.0 bind"
 else
   pass "env profile falls back to loopback with an empty TAILSCALE_IP"
+fi
+
+# --- 7. analytics profile: same loopback-fallback rule as env ----------------
+rendered_analytics="$($COMPOSE --env-file "$scratch/.env.empty" -f docker-compose.yml \
+  --profile analytics config 2>/dev/null)"
+
+if printf '%s' "$rendered_analytics" | grep -qE '(^|[^0-9.])0\.0\.0\.0:'; then
+  fail "analytics profile rendered with an empty TAILSCALE_IP contains a 0.0.0.0 bind"
+else
+  pass "analytics profile falls back to loopback with an empty TAILSCALE_IP"
 fi
 
 echo

@@ -231,6 +231,12 @@ Infisical (requires Tailscale - section 13 first):
 podman-compose -f docker-compose.yml --profile env up -d infisical-postgres infisical-redis infisical-db-dump infisical
 ```
 
+Umami (requires Tailscale - section 13 first):
+
+```sh
+podman-compose -f docker-compose.yml --profile analytics up -d umami-postgres umami-db-dump umami
+```
+
 ## 10. Restore
 
 The helper restores with the correct rootless-Podman ownership and keeps your current data aside:
@@ -857,3 +863,70 @@ Negative test from a **non-tailnet** device: `curl -m 3 http://<lan-ip>:8080` mu
 The generic `./restore.sh` flow covers `./data/infisical` automatically. The restored PostgreSQL directory is supplemented by `infisical-latest.dump` (restore with `pg_restore` against a clean `infisical-postgres` container if the raw data restore ever fails). Decryption of the stored secrets requires the same `INFISICAL_ENCRYPTION_KEY` as when they were written - that is why it lives off the backup disk.
 
 Rollback: remove `env` from `LOCALCLOUD_PROFILES`, rerun `./install.sh`. The containers stop and `./data/infisical` stays in place.
+
+## 16. Analytics (Umami)
+
+Optional profile `analytics`. [Umami](https://umami.is) is the stack's privacy-first web analytics: self-hosted, no cookies, no personal data, MIT-licensed. It is Tier B (Private): reachable **only through Tailscale**, bound to the tailscale0 address, and deliberately never attached to the tunnel network (`umami-net` only - see [SECURITY.md](SECURITY.md)).
+
+### Prerequisites
+
+1. Section 13 complete: Tailscale installed on the host and `TAILSCALE_ENABLED=true` in `.env`. The installer fails closed when `analytics` is enabled without the Private transport.
+2. Keys in `.env`:
+
+   ```
+   UMAMI_DB_PASSWORD=<openssl rand -hex 32>   # hex: it is embedded in the postgres:// URI
+   UMAMI_APP_SECRET=<openssl rand -hex 32>    # signs login sessions
+   UMAMI_2FA_KEY=<openssl rand -hex 32>       # 64 hex chars; encrypts TOTP secrets behind 2FA
+   ```
+
+   Keep `UMAMI_APP_SECRET` and `UMAMI_2FA_KEY` off the backup disk, with `RESTIC_PASSWORD`: losing `UMAMI_APP_SECRET` invalidates every session, losing `UMAMI_2FA_KEY` locks out every account with 2FA enabled.
+3. Enable: add `analytics` to `LOCALCLOUD_PROFILES` and rerun `./install.sh`.
+
+The profile brings `umami` (bound to `${TAILSCALE_IP}:${UMAMI_PORT:-3002}`; 3002 rather than Umami's native 3000 so the loopback dev fallback cannot collide with Gitea's dev port), `umami-postgres` (no ports; per-feature instance on `POSTGRES_IMAGE`, never shared with another profile), and `umami-db-dump` (logical `pg_dump` via the shared `backup/pg-dump.sh`, at 02:00 by default - first in the nightly sequence, ahead of the 02:15 Infisical, 02:30 appdb, and 02:45 Mattermost dumps and the 03:00 restic snapshot).
+
+Umami applies its database schema and migrations automatically on startup, so the first start against an empty `umami-postgres` needs no manual step.
+
+### What Tier B Means For Analytics
+
+Umami's collect endpoint (`/api/send`) answers trackers embedded in the pages you measure. On this stack that endpoint is reachable **only from tailnet devices**, which fits measuring your own internal tools (Gitea, n8n, Mattermost, self-hosted apps). Visitors outside the tailnet cannot report events - by design. Analytics for public websites would require a deliberate Tier A exposure decision instead (see [SECURITY.md](SECURITY.md)); do not widen this profile's reach without one.
+
+Embedded trackers on HTTPS pages need an HTTPS collect endpoint (browsers block mixed content). Front the instance with `tailscale serve` (see section 15's HTTPS note) and use the `https://...ts.net` URL as the tracker source.
+
+### First-Run Setup
+
+1. From an enrolled device, open `http://<tailscale-ip>:3002` and log in as `admin`. The initial password is generated on first start and printed once in the container log:
+
+   ```sh
+   podman logs umami 2>&1 | grep -i password
+   ```
+
+2. Change the admin password immediately and enable two-factor authentication (encrypted with `UMAMI_2FA_KEY`).
+3. Add a website per site you measure, then copy the tracking snippet into those pages' `<head>`.
+4. Tailnet ACLs decide who can even reach the UI - grant port `3002` only to the devices that need it (see the ACL example in section 13).
+
+### Verify
+
+```sh
+podman ps --format "table {{.Names}}\t{{.Status}}" | grep umami
+ss -tlnp | grep "${UMAMI_PORT:-3002}"   # foreign address: the 100.x tailscale IP, never 0.0.0.0
+podman logs umami 2>&1 | tail -20
+podman exec umami-db-dump /usr/local/bin/pg-dump.sh once
+ls -lh ./data/umami/db-dumps/           # umami-latest.dump after the first dump run
+curl http://<tailscale-ip>:3002/api/heartbeat   # from an enrolled device: {"status":"ok"}
+```
+
+Negative test from a **non-tailnet** device: `curl -m 3 http://<lan-ip>:3002` must time out or refuse.
+
+### Restore Notes
+
+The generic `./restore.sh` flow covers `./data/umami` automatically. The restored PostgreSQL directory is supplemented by `umami-latest.dump` (restore with `pg_restore` against a clean `umami-postgres` container if the raw data restore ever fails):
+
+```sh
+podman-compose -f docker-compose.yml --profile analytics up -d umami-postgres
+# wait for it to accept connections, then:
+podman exec -i umami-postgres dropdb -U umami umami
+podman exec -i umami-postgres createdb -U umami umami
+podman exec -i umami-postgres pg_restore -U umami -d umami < ./data/umami/db-dumps/umami-latest.dump
+```
+
+Rollback: remove `analytics` from `LOCALCLOUD_PROFILES`, rerun `./install.sh`. The containers stop and `./data/umami` stays in place.

@@ -384,6 +384,110 @@ services:
     networks:
       - appdb-net
 
+  # --- Private tier (Tailscale only) -----------------------------------------
+  # Umami privacy-first web analytics. Same Tier B rule as the env and db
+  # profiles: reachable over Tailscale and umami-net only, never from the LAN
+  # and never through Cloudflare. The app itself is stateless (no volume) --
+  # all state lives in umami-postgres, per the per-feature stateful convention.
+  umami:
+    image: ${UMAMI_IMAGE:-ghcr.io/umami-software/umami:latest}
+    container_name: umami
+    profiles:
+      - analytics
+    restart: unless-stopped
+    # Plain ordering, not condition: service_healthy - see mattermost above.
+    depends_on:
+      - umami-postgres
+    init: true
+    environment:
+      - DATABASE_URL=postgresql://umami:${UMAMI_DB_PASSWORD}@umami-postgres:5432/umami
+      - APP_SECRET=${UMAMI_APP_SECRET}
+      # Encrypts the TOTP secrets behind two-factor login. Losing it locks out
+      # every account with 2FA enabled, so it belongs with the other secrets
+      # in the password manager, not on the backup disk.
+      - TWO_FACTOR_ENCRYPTION_KEY=${UMAMI_2FA_KEY}
+      # The stack's privacy posture is the point; umami-net is internal anyway,
+      # so this just documents intent and saves a doomed request.
+      - DISABLE_TELEMETRY=1
+    ports:
+      # Tier B (Private): reachable only through Tailscale. Loopback fallback
+      # keeps an empty TAILSCALE_IP from degrading into a 0.0.0.0 bind;
+      # install.sh fails closed when the analytics profile is enabled without
+      # TAILSCALE_ENABLED=true. 3002, not umami's native 3000: Gitea's dev
+      # port is 127.0.0.1:3000 (compose.dev.yml), and the loopback fallback
+      # would collide with it on a dev machine.
+      - "${TAILSCALE_IP:-127.0.0.1}:${UMAMI_PORT:-3002}:3000"
+    # Kept for `podman ps` visibility and manual `podman healthcheck run` only;
+    # deliberately not used to gate startup ordering - see mattermost above.
+    healthcheck:
+      test: ["CMD-SHELL", "curl http://localhost:3000/api/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - umami-net
+    # Deliberately NOT on edge-net: the tunnel must have no route to the
+    # analytics UI or its collect endpoint. See SECURITY.md Tier B.
+
+  umami-postgres:
+    # Per-feature stateful instance (mattermost-postgres pattern): never
+    # shared with another service, pinned via POSTGRES_IMAGE like the other
+    # per-feature databases.
+    image: ${POSTGRES_IMAGE:-docker.io/postgres:15-alpine}
+    container_name: umami-postgres
+    profiles:
+      - analytics
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=umami
+      - POSTGRES_PASSWORD=${UMAMI_DB_PASSWORD}
+      - POSTGRES_DB=umami
+    volumes:
+      - ./data/umami/postgres:/var/lib/postgresql/data
+    # Kept for `podman ps` visibility and manual `podman healthcheck run`,
+    # deliberately not used to gate startup ordering - see mattermost above.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami -d umami"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - umami-net
+    # NO ports: ever - the analytics database is internal-only, never exposed
+
+  umami-db-dump:
+    image: ${POSTGRES_IMAGE:-docker.io/postgres:15-alpine}
+    container_name: umami-db-dump
+    profiles:
+      - analytics
+    restart: unless-stopped
+    # Same reasoning as umami; the dump script probes with pg_isready and
+    # skips the run when the database is not reachable yet.
+    depends_on:
+      - umami-postgres
+    command: ["/bin/sh", "/usr/local/bin/pg-dump.sh"]
+    environment:
+      - TZ=${TZ:-UTC}
+      - PGHOST=umami-postgres
+      - PGPORT=5432
+      - PGUSER=umami
+      - PGPASSWORD=${UMAMI_DB_PASSWORD}
+      - PGDATABASE=umami
+      # Single-database mode, shared pg-dump.sh: dumps land as
+      # umami-<ts>.dump plus umami-latest.dump. Runs at 02:00 - first in the
+      # nightly sequence (infisical 02:15, appdb 02:30, mattermost 02:45,
+      # restic 03:00).
+      - DB_DUMP_ALL=false
+      - DB_DUMP_PREFIX=umami
+      - DB_DUMP_HOUR=${UMAMI_DB_DUMP_HOUR:-2}
+      - DB_DUMP_MINUTE=${UMAMI_DB_DUMP_MINUTE:-0}
+      - DB_DUMP_KEEP_DAYS=${UMAMI_DB_DUMP_KEEP_DAYS:-14}
+    volumes:
+      - ./backup/pg-dump.sh:/usr/local/bin/pg-dump.sh:ro
+      - ./data/umami/db-dumps:/dumps
+    networks:
+      - umami-net
+
   backup:
     build: ./backup
     container_name: backup
@@ -407,6 +511,7 @@ services:
       - ./data/mattermost:/sources/mattermost:ro
       - ./data/infisical:/sources/infisical:ro
       - ./data/appdb:/sources/appdb:ro
+      - ./data/umami:/sources/umami:ro
       # Mount future service data volumes read-only under /sources/<service>
       # e.g. - ./data/<service>:/sources/<service>:ro
     network_mode: none
@@ -432,5 +537,11 @@ networks:
     # Same private-tier rule as appdb-net: no egress, host still reaches the
     # published tailscale0 port. The env store's own PostgreSQL never leaves
     # this network.
+    driver: bridge
+    internal: true
+  # Same private-tier rule as appdb-net and env-net: no egress, host still
+  # reaches the published tailscale0 port. Umami and its PostgreSQL never
+  # leave this network.
+  umami-net:
     driver: bridge
     internal: true

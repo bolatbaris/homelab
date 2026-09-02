@@ -51,9 +51,9 @@ normalize_profiles() {
 
   for profile in $(printf '%s' "$raw" | tr ',' ' '); do
     case "$profile" in
-      dns|mgmt|chat|env|db) ;;
+      dns|mgmt|chat|env|db|analytics) ;;
       *)
-        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env, db."
+        fail "Invalid LOCALCLOUD_PROFILES entry '${profile}'. Use comma-separated values from: dns, mgmt, chat, env, db, analytics."
         ;;
     esac
 
@@ -170,6 +170,7 @@ Optional services via LOCALCLOUD_PROFILES (comma-separated):
   chat -> Mattermost + PostgreSQL (requires MATTERMOST_DB_PASSWORD and MATTERMOST_SUBDOMAIN)
   env  -> Infisical env store, Tier B only (requires TAILSCALE_ENABLED=true plus INFISICAL_ENCRYPTION_KEY, INFISICAL_AUTH_SECRET, INFISICAL_DB_PASSWORD)
   db   -> Application database (PostgreSQL + Adminer), Tier B only (requires TAILSCALE_ENABLED=true plus the APPDB_* values in .env.example)
+  analytics -> Umami web analytics, Tier B only (requires TAILSCALE_ENABLED=true plus UMAMI_DB_PASSWORD, UMAMI_APP_SECRET, UMAMI_2FA_KEY)
 MSG
   exit 0
 fi
@@ -240,6 +241,17 @@ if profile_enabled db; then
   require_env_value APPDB_DATABASES
   require_compose_required_var_support
 fi
+if profile_enabled analytics; then
+  # Umami is Tier B (Private), same rule as the env and db profiles: without
+  # Tailscale there is no address worth binding, so fail before anything
+  # starts rather than fall back to some weaker reach.
+  if [ "$TAILSCALE_ENABLED" != "true" ]; then
+    fail "Profile 'analytics' (Umami web analytics) is Tier B (Private) and requires TAILSCALE_ENABLED=true. Complete deployment.md section 13 first, or disable the analytics profile."
+  fi
+  require_env_value UMAMI_DB_PASSWORD
+  require_env_value UMAMI_APP_SECRET
+  require_env_value UMAMI_2FA_KEY
+fi
 
 check_tailscale
 
@@ -259,7 +271,8 @@ info "Creating private data directories"
 mkdir -p ./data/{portainer,monitor,gitea,n8n,adguard/work,adguard/conf} \
          ./data/mattermost/{config,data,logs,plugins,client-plugins,bleve-indexes,postgres,db-dumps} \
          ./data/infisical/{postgres,redis,db-dumps} \
-         ./data/appdb/{postgres,db-dumps}
+         ./data/appdb/{postgres,db-dumps} \
+         ./data/umami/{postgres,db-dumps}
 # Privacy boundary: ./data itself is host-user owned and 0700, so no other
 # host user can traverse it. Individual top-level dirs may be owned by
 # rootless Podman subuids on migrated installs - uid isolation already covers
@@ -375,7 +388,7 @@ systemctl --user enable "$SERVICE_NAME"
 # staying up. The db profile is only named once an address is known, because
 # rendering it without one trips its own bind guard -- correct behavior, but a
 # confusing way for a teardown to fail.
-CLEANUP_PROFILE_ARGS=(--profile dns --profile mgmt --profile chat --profile env)
+CLEANUP_PROFILE_ARGS=(--profile dns --profile mgmt --profile chat --profile env --profile analytics)
 if [ -n "$TAILSCALE_IP" ]; then
   CLEANUP_PROFILE_ARGS+=(--profile db)
 fi

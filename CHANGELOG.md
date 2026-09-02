@@ -6,6 +6,19 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- Web analytics behind a new opt-in `analytics` profile: Umami (privacy-first,
+  MIT-licensed) plus its per-feature `umami-postgres` and a `umami-db-dump`
+  sidecar on the shared `backup/pg-dump.sh` (logical `pg_dump` at 02:00, first
+  in the nightly dump sequence, to `./data/umami/db-dumps`). Tier B (Private)
+  like the `env` and `db` profiles: `umami` binds the tailscale0 address only,
+  lives on a new `internal: true` `umami-net`, falls back to loopback rather
+  than a wildcard if `TAILSCALE_IP` is ever empty, and is never attached to
+  `edge-net`. The installer fails closed unless `TAILSCALE_ENABLED=true` and
+  `UMAMI_DB_PASSWORD`, `UMAMI_APP_SECRET`, and `UMAMI_2FA_KEY` are set.
+  Anonymous upstream telemetry is disabled (`DISABLE_TELEMETRY=1`). Defaults
+  to port 3002 rather than Umami's native 3000, so the loopback dev fallback
+  cannot collide with Gitea's dev port. Documented that Tier B also applies
+  to the collect endpoint: only tailnet devices can be measured.
 - Application database behind a new opt-in `db` profile: PostgreSQL (`appdb`),
   Adminer (`appdb-adminer`), and a logical-dump sidecar (`appdb-dump`), for
   first-party backend applications. This is the stack's first Private (Tier B)
