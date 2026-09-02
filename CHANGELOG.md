@@ -198,6 +198,16 @@ Notable changes to LocalCloud Stack. Format loosely follows
 - Mattermost chat history now has a restore-friendly logical dump in addition
   to the raw PostgreSQL data directory snapshot.
 
+### Fixed
+- Umami no longer crash-exits on first start while `umami-postgres` is still
+  in its one-time `initdb` (Umami exits on an unreachable database instead of
+  retrying). On rootless Podman 4.9.x that crash-loop also wedged conmon's
+  restart supervision and the `rootlessport` publish proxy, so the container
+  could later show `Ready` in its logs while the published tailscale0 port
+  silently did not listen; the startup is now gated on the database accepting
+  TCP (`nc -z`, busybox in the image's alpine base), and deployment.md section
+  16 documents the recreate-not-restart recovery for any recurrence.
+
 ### Security
 - All examples genericized; personal domain and IP removed from the working
   tree and from git history.

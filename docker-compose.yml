@@ -398,6 +398,28 @@ services:
     # Plain ordering, not condition: service_healthy - see mattermost above.
     depends_on:
       - umami-postgres
+    # Gate startup on the database accepting TCP before handing off to the
+    # image's own start script (its CMD). Umami hard-exits when PostgreSQL
+    # is not ready - it has no internal retry, unlike Mattermost - and a
+    # first-start crash-loop is worse here than anywhere else in the stack:
+    # on rootless Podman 4.9.x, a container that exits within seconds of
+    # creation can leave conmon's restart supervision dead and the
+    # rootlessport publish proxy never (re)spawned, so the container later
+    # shows "Ready" in its logs while the host port silently does not listen
+    # (observed in production: umami-postgres spent ~9 minutes in its
+    # one-time initdb while umami crashed beside it; fix was recreating the
+    # container - see deployment.md section 16). nc is busybox, present in
+    # the alpine base of the image. The postgres image's init phase listens
+    # on the unix socket only, so a successful TCP connect means the final
+    # server is up.
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        until nc -z umami-postgres 5432; do
+        echo "waiting for umami-postgres:5432"; sleep 2;
+        done;
+        exec sh scripts/start-docker.sh
     init: true
     environment:
       - DATABASE_URL=postgresql://umami:${UMAMI_DB_PASSWORD}@umami-postgres:5432/umami

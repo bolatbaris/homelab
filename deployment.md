@@ -912,6 +912,17 @@ curl http://<tailscale-ip>:3002/api/heartbeat   # from an enrolled device: {"sta
 
 Negative test from a **non-tailnet** device: `curl -m 3 http://<lan-ip>:3002` must time out or refuse.
 
+### Troubleshooting: port refuses while the container says Ready
+
+Umami's first start once crashed beside a `umami-postgres` still in its one-time `initdb` (Umami exits on an unreachable database instead of retrying, unlike Mattermost). On rootless Podman 4.9.x that crash-loop had a second-order effect: conmon's restart supervision died and the `rootlessport` publish proxy was never (re)spawned, so after a manual `podman restart umami` the container showed `Ready` in its logs while `100.x.x.x:3002` refused connections - `podman port umami` still showed the mapping, but `ss -tlnp | grep 3002` had no listener (compare 8080/8081/5432, which each have a `rootlessport` process).
+
+`docker-compose.yml` now gates Umami's start on the database accepting TCP, which removes the crash entirely. If a wedge like this ever recurs (any Tier B port refusing while its container looks healthy), the fix is to **recreate** the container, not restart it:
+
+```sh
+podman rm -f umami
+podman-compose -f docker-compose.yml --profile analytics up -d umami
+```
+
 ### Restore Notes
 
 The generic `./restore.sh` flow covers `./data/umami` automatically. The restored PostgreSQL directory is supplemented by `umami-latest.dump` (restore with `pg_restore` against a clean `umami-postgres` container if the raw data restore ever fails):
