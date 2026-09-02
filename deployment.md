@@ -894,13 +894,8 @@ Embedded trackers on HTTPS pages need an HTTPS collect endpoint (browsers block 
 
 ### First-Run Setup
 
-1. From an enrolled device, open `http://<tailscale-ip>:3002` and log in as `admin`. The initial password is generated on first start and printed once in the container log:
-
-   ```sh
-   podman logs umami 2>&1 | grep -i password
-   ```
-
-2. Change the admin password immediately and enable two-factor authentication (encrypted with `UMAMI_2FA_KEY`).
+1. From an enrolled device, open `http://<tailscale-ip>:3002` and log in as `admin` / `umami` - the upstream default credentials, seeded by Umami's init migration (there is no generated password in the container log).
+2. Change the admin password immediately (Umami prompts for a new one while the default is still set) and enable two-factor authentication (encrypted with `UMAMI_2FA_KEY`).
 3. Add a website per site you measure, then copy the tracking snippet into those pages' `<head>`.
 4. Tailnet ACLs decide who can even reach the UI - grant port `3002` only to the devices that need it (see the ACL example in section 13).
 
