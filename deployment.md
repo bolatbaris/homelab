@@ -180,7 +180,7 @@ Expected base services:
 - n8n
 - backup
 
-Gitea repositories should show an **Actions** tab - a server-side feature enabled through the compose environment, so an existing install picks it up when `podman-compose -f docker-compose.yml up -d gitea` recreates the container (Gitea's env-to-ini applies it on boot; no manual `app.ini` edit). The stack ships no runner: a runner executes workflow commands as its owning user, so deploying one - for example a repo-scoped `act_runner` in host mode - is a deliberate host-level decision ([SECURITY.md](SECURITY.md)).
+Gitea repositories should show an **Actions** tab - a server-side feature enabled through the compose environment, so an existing install picks it up when `podman-compose -f docker-compose.yml up -d gitea` recreates the container (Gitea's env-to-ini applies it on boot; no manual `app.ini` edit). The stack ships no runner: a runner executes workflow commands as its owning user, so deploying one - for example a repo-scoped `act_runner` in host mode - is a deliberate host-level decision ([SECURITY.md](SECURITY.md)). The reusable pipeline pattern for deploying your own applications this way is documented in [docs/app-deployment.md](docs/app-deployment.md).
 
 Profile services appear only when enabled via `LOCALCLOUD_PROFILES`: `adguard` (`dns`), `portainer` (`mgmt`), `mattermost` + `mattermost-postgres` + `mattermost-postgres-dump` (`chat`), `infisical` + `infisical-postgres` + `infisical-redis` + `infisical-db-dump` (`env`), `appdb` + `appdb-adminer` + `appdb-dump` (`db`), `umami` + `umami-postgres` + `umami-db-dump` (`analytics`), `glitchtip` + `glitchtip-postgres` + `glitchtip-valkey` + `glitchtip-db-dump` (`monitoring`). When the `dns` profile is enabled, also verify AdGuard:
 
