@@ -20,7 +20,7 @@ This is not a hosted SaaS product. It is installable self-hosted software: users
 |---|---|---|
 | cloudflared | Cloudflare Tunnel gateway | outbound-only |
 | Glances | lightweight host monitoring | Cloudflare Tunnel, protect with Access |
-| Gitea | self-hosted Git | Cloudflare Tunnel for HTTP, LAN-bound SSH |
+| Gitea | self-hosted Git, Actions enabled server-side (no runner ships) | Cloudflare Tunnel for HTTP, LAN-bound SSH |
 | n8n | workflow automation | Cloudflare Tunnel, protect UI with Access |
 | restic backup sidecar | encrypted, versioned backups | no network |
 | PostgreSQL + Adminer (`db` profile) | application database for your own backends | Tailscale only, never Cloudflare |
@@ -133,6 +133,9 @@ Services follow a three-tier exposure model:
 Additional rules:
 
 - Admin-style apps should be protected by Cloudflare Access and MFA.
+- Gitea Actions is enabled server-side, but the stack ships no runner: a
+  runner executes workflow commands as the user that owns it, so running one
+  is a deliberate host-level decision.
 - Portainer is opt-in because it controls the Podman API socket.
 - Mattermost is opt-in because it adds public attack surface and a database sidecar.
 - Backups are encrypted restic snapshots, not plain folder mirrors.

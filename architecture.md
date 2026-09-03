@@ -76,6 +76,9 @@ Backups are encrypted and versioned. The restic password must be stored separate
 
 - `.env` is owner-readable only.
 - Gitea disables registration and requires sign-in.
+- Gitea Actions is enabled server-side, but the stack ships no runner:
+  nothing executes workflows until the operator deploys one, which is a
+  host-level trust decision (see [SECURITY.md](SECURITY.md)).
 - n8n uses an explicit encryption key and disables higher-risk defaults.
 - Dev ports bind to `127.0.0.1`.
 - Auto-loaded `docker-compose.override.yml` is ignored and rejected by the installer.
