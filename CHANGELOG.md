@@ -12,7 +12,13 @@ Notable changes to LocalCloud Stack. Format loosely follows
   Server-side only - repositories get the Actions UI, but the stack ships no
   runner on purpose: a runner executes workflow commands as the user that
   owns it, a host-level trust decision. Installs wanting CI register their
-  own runner (for example a repo-scoped `act_runner`).
+  own runner (for example a repo-scoped `act_runner`). New
+  [docs/app-deployment.md](docs/app-deployment.md) documents the reusable
+  CI/CD pattern for first-party applications: separate compose projects
+  attaching to the stack's networks, probe-and-wait entrypoints,
+  migrate-before-deploy pipelines, env materialized from CI secrets, and a
+  per-language quick reference (Node, Java, Python, static web) with a
+  placeholder table for the per-app parts.
 - App-error monitoring behind a new opt-in `monitoring` profile: GlitchTip
   (Sentry-compatible, open source) in upstream's single-container
   `SERVER_ROLE=all_in_one` shape, plus its per-feature `glitchtip-postgres`,

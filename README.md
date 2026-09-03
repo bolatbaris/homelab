@@ -167,6 +167,7 @@ A backup disk mounted by hand does not come back after a power cut, and the nigh
 ## Documentation
 
 - [Deployment Runbook](deployment.md) - install, restore, wedged-stack recovery, power-loss checklist, and the Private tier
+- [Deploying First-Party Applications](docs/app-deployment.md) - reusable CI/CD pattern for running your own apps next to the stack
 - [Architecture](architecture.md)
 - [Security Baseline](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
