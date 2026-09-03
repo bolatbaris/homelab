@@ -6,6 +6,13 @@ Notable changes to LocalCloud Stack. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- Gitea Actions is enabled by default: `GITEA__actions__ENABLED=true` in the
+  compose environment, applied through Gitea's env-to-ini on every boot so
+  `app.ini` needs no manual edit and survives container recreates.
+  Server-side only - repositories get the Actions UI, but the stack ships no
+  runner on purpose: a runner executes workflow commands as the user that
+  owns it, a host-level trust decision. Installs wanting CI register their
+  own runner (for example a repo-scoped `act_runner`).
 - App-error monitoring behind a new opt-in `monitoring` profile: GlitchTip
   (Sentry-compatible, open source) in upstream's single-container
   `SERVER_ROLE=all_in_one` shape, plus its per-feature `glitchtip-postgres`,

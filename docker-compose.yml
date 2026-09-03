@@ -47,6 +47,13 @@ services:
       - GITEA__security__INSTALL_LOCK=true
       - GITEA__service__DISABLE_REGISTRATION=true
       - GITEA__service__REQUIRE_SIGNIN_VIEW=true
+      # Server-side flag only: repositories get the Actions UI, but nothing
+      # executes without a runner, and this stack deliberately ships none - a
+      # runner executes workflow commands as the user that owns it, which is a
+      # host-level trust decision left to the installer. Set through the
+      # environment so Gitea's env-to-ini applies it on every boot and app.ini
+      # stays correct across container recreates without manual edits.
+      - GITEA__actions__ENABLED=true
     volumes:
       - ./data/gitea:/data
     ports:

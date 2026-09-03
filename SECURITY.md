@@ -86,6 +86,14 @@ The port 53 and 3001 rules are only needed when the `dns` profile is enabled; po
 
 The `db` and `env` profiles need no rule of their own beyond `sudo ufw allow in on tailscale0`: their services bind the tailscale0 address, so the default-deny public interface already covers them.
 
+## Gitea Actions And Runners
+
+Gitea ships with Actions enabled server-side (`GITEA__actions__ENABLED=true` in the compose environment; Gitea's env-to-ini applies it on every boot, so `app.ini` stays correct without manual edits and survives container recreates). Repositories get the Actions UI, but the stack deliberately includes no runner:
+
+- A runner executes workflow commands as the user that owns it. On this stack that user also owns every container and every `./data/<service>` volume, so deploying a runner is a host-level trust decision, not a stack toggle.
+- Installs that want CI deploy their own runner (for example a repo-scoped `act_runner` in host mode) and treat the protected-branch approval as the trust gate: workflows only execute what an approved merge put on the branch.
+- Keep runners repo-scoped rather than instance-wide, and do not point a runner at repositories whose workflow changes you do not control.
+
 ## Secrets
 
 `.env` must be mode `600`.
